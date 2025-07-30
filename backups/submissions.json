@@ -1,0 +1,32 @@
+[
+  {
+    "project_name": "Hallson",
+    "unit_no": "A1212",
+    "spa_price": "2,000,000",
+    "nett_price": "1,000,000",
+    "commission_rate": "2.5",
+    "agents": [
+      {
+        "name": "A",
+        "code": "108001",
+        "percentage": 30,
+        "commission": "7500.00"
+      },
+      {
+        "name": "B",
+        "code": "108002",
+        "percentage": 70,
+        "commission": "17500.00"
+      }
+    ],
+    "submission_date": "2025-07-30T18:57:45.762Z",
+    "customer_name": "V",
+    "customer_phone": "01837391",
+    "customer_address": "Wisma",
+    "spa_date": "2025-07-10",
+    "la_date": "2025-07-10",
+    "user_id": "1092751498250817567",
+    "username": "victorheng",
+    "submitted_at": "2025-07-30T18:59:30.937Z"
+  }
+]
