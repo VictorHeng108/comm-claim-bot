@@ -106,5 +106,29 @@
     "user_id": "1092751498250817567",
     "username": "victorheng",
     "submitted_at": "2025-07-31T02:54:23.035Z"
+  },
+  {
+    "project_name": "God's Project",
+    "unit_no": "Eternity",
+    "spa_price": "10,000,000",
+    "nett_price": "5,000,000",
+    "commission_rate": "2.5",
+    "agents": [
+      {
+        "name": "V",
+        "code": "0",
+        "percentage": 100,
+        "commission": "125000.00"
+      }
+    ],
+    "submission_date": "2025-07-31T03:36:42.403Z",
+    "customer_name": "God",
+    "customer_phone": "1000000",
+    "customer_address": "Heaven",
+    "spa_date": "2025-07-10",
+    "la_date": "2025-07-10",
+    "user_id": "1092751498250817567",
+    "username": "victorheng",
+    "submitted_at": "2025-07-31T03:37:48.558Z"
   }
 ]
