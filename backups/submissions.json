@@ -529,5 +529,29 @@
     "user_id": "1092751498250817567",
     "username": "victorheng",
     "submitted_at": "2025-07-31T08:31:53.191Z"
+  },
+  {
+    "project_name": "God's Plan",
+    "unit_no": "A1212",
+    "spa_price": "2,000,000",
+    "nett_price": "1,000,000",
+    "commission_rate": "2.5",
+    "agents": [
+      {
+        "name": "Victor",
+        "code": "108",
+        "percentage": 100,
+        "commission": "25000.00"
+      }
+    ],
+    "submission_date": "2025-07-31T08:37:53.662Z",
+    "customer_name": "God",
+    "customer_phone": "123",
+    "customer_address": "Heaven",
+    "spa_date": "2025-07-10",
+    "la_date": "2025-07-10",
+    "user_id": "1092751498250817567",
+    "username": "victorheng",
+    "submitted_at": "2025-07-31T08:38:36.161Z"
   }
 ]
