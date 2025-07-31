@@ -677,5 +677,30 @@
     "username": "victorheng",
     "submitted_at": "2025-07-31T10:45:22.926Z",
     "uploadedFiles": []
+  },
+  {
+    "project_name": "God",
+    "unit_no": "A1212",
+    "spa_price": "2,000,000",
+    "nett_price": "1,000,000",
+    "commission_rate": "2.5",
+    "agents": [
+      {
+        "name": "Victor",
+        "code": "108001",
+        "percentage": 100,
+        "commission": "25000.00"
+      }
+    ],
+    "submission_date": "2025-07-31T12:02:37.089Z",
+    "customer_name": "God",
+    "customer_phone": "1010010100",
+    "customer_address": "Wisma",
+    "spa_date": "2025-07-10",
+    "la_date": "2025-07-10",
+    "user_id": "1092751498250817567",
+    "username": "victorheng",
+    "submitted_at": "2025-07-31T12:03:28.454Z",
+    "uploadedFiles": []
   }
 ]
