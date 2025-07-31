@@ -159,5 +159,29 @@
     "user_id": "1092751498250817567",
     "username": "victorheng",
     "submitted_at": "2025-07-31T04:13:04.690Z"
+  },
+  {
+    "project_name": "God's word",
+    "unit_no": "H100",
+    "spa_price": "3000000",
+    "nett_price": "2000000",
+    "commission_rate": "2.5",
+    "agents": [
+      {
+        "name": "Victor",
+        "code": "108001",
+        "percentage": 100,
+        "commission": "50000.00"
+      }
+    ],
+    "submission_date": "2025-07-31T04:20:10.070Z",
+    "customer_name": "God",
+    "customer_phone": "10000000",
+    "customer_address": "Heaven",
+    "spa_date": "2025-07-10",
+    "la_date": "2025-07-10",
+    "user_id": "1092751498250817567",
+    "username": "victorheng",
+    "submitted_at": "2025-07-31T04:21:25.647Z"
   }
 ]
