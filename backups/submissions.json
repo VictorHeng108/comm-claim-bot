@@ -131,29 +131,5 @@
     "user_id": "1092751498250817567",
     "username": "victorheng",
     "submitted_at": "2025-07-31T03:01:58.816Z"
-  },
-  {
-    "project_name": "HH",
-    "unit_no": "A1212",
-    "spa_price": "2,000,000",
-    "nett_price": "1,000,000",
-    "commission_rate": "2.5",
-    "agents": [
-      {
-        "name": "A",
-        "code": "108001",
-        "percentage": 100,
-        "commission": "25000.00"
-      }
-    ],
-    "submission_date": "2025-07-31T03:04:47.445Z",
-    "customer_name": "VIC",
-    "customer_phone": "37890",
-    "customer_address": "Wisma",
-    "spa_date": "2025-07-24",
-    "la_date": "2025-07-10",
-    "user_id": "1092751498250817567",
-    "username": "victorheng",
-    "submitted_at": "2025-07-31T03:07:50.802Z"
   }
 ]
