@@ -1,0 +1,27 @@
+
+{
+  "bot": {
+    "name": "Commission Claim Bot",
+    "version": "1.0.0"
+  },
+  "googleDrive": {
+    "folderId": null,
+    "folderName": "Commission Submissions"
+  },
+  "github": {
+    "owner": "VictorHeng108",
+    "repo": "comm-claim-bot",
+    "backupPath": "backups"
+  },
+  "validation": {
+    "maxAgents": 4,
+    "requiredAgentPercentageTotal": 100
+  },
+  "adminUserIds": [
+    "123456789012345678",
+    "987654321098765432"
+  ],
+  "adminGuildIds": [
+    "1118938632250732544"
+  ]
+}
