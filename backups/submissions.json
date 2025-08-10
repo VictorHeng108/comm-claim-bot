@@ -1,1 +1,64 @@
-[]
+[
+  {
+    "project_name": "God's Plan",
+    "unit_no": "A1212",
+    "spa_price": "2,000,000",
+    "nett_price": "1,000,000",
+    "commission_rate": "2.5",
+    "agents": [
+      {
+        "name": "A",
+        "code": "202",
+        "percentage": 100,
+        "commission": "25000.00"
+      }
+    ],
+    "submission_date": "2025-08-10T11:36:33.341Z",
+    "customer_name": "Jsie",
+    "customer_phone": "Jejen",
+    "customer_address": "Jsjej",
+    "spa_date": "2025-07-10",
+    "la_date": "2025-07-10",
+    "dataConfirmed": true,
+    "status": "awaiting_form_completion",
+    "sessionToken": "token_1092751498250817567_1754825837511_241plkw1g",
+    "userId": "1092751498250817567",
+    "username": "victorheng",
+    "jotform": {
+      "formId": "252111999816061",
+      "formUrl": "https://form.jotform.com/252111999816061?user_id=1092751498250817567&price_token=token_1092751498250817567_1754825837511_241plkw1g",
+      "isTemplate": true,
+      "webhookUrl": "https://workspace.victorheng.repl.co/webhook/jotform",
+      "sessionToken": "token_1092751498250817567_1754825837511_241plkw1g"
+    },
+    "uploadedFiles": [
+      {
+        "originalName": "PrintPreview(2).PDF",
+        "finalName": "God_s_Plan_A1212_2025-08-10_PrintPreview(2).PDF",
+        "driveId": "1jXE3dQev6BdcMKVdjUKWgzOYBVcuomHx",
+        "driveLink": "https://drive.google.com/file/d/1jXE3dQev6BdcMKVdjUKWgzOYBVcuomHx/view?usp=drivesdk",
+        "jotformUrl": "https://www.jotform.com/uploads/victorheng108/252111999816061/6306350652076145684/PrintPreview(2).PDF",
+        "questionId": "4"
+      },
+      {
+        "originalName": "DC-Chinese-Brochure.pdf",
+        "finalName": "God_s_Plan_A1212_2025-08-10_DC-Chinese-Brochure.pdf",
+        "driveId": "1k2OCMpoYcGS-jfbShmeJ21oBJzLapYEk",
+        "driveLink": "https://drive.google.com/file/d/1k2OCMpoYcGS-jfbShmeJ21oBJzLapYEk/view?usp=drivesdk",
+        "jotformUrl": "https://www.jotform.com/uploads/victorheng108/252111999816061/6306350652076145684/DC-Chinese-Brochure.pdf",
+        "questionId": "7"
+      },
+      {
+        "originalName": "BHP B-43A-08 Booking Form.pdf",
+        "finalName": "God_s_Plan_A1212_2025-08-10_BHP B-43A-08 Booking Form.pdf",
+        "driveId": "1wNIiG2CGszdHTwALEyTyd1XBlStFkQhn",
+        "driveLink": "https://drive.google.com/file/d/1wNIiG2CGszdHTwALEyTyd1XBlStFkQhn/view?usp=drivesdk",
+        "jotformUrl": "https://www.jotform.com/uploads/victorheng108/252111999816061/6306350652076145684/BHP B-43A-08 Booking Form.pdf",
+        "questionId": "8"
+      }
+    ],
+    "jotformSubmissionId": "6306350652076145684",
+    "user_id": "1092751498250817567",
+    "submitted_at": "2025-08-10T11:38:21.385Z"
+  }
+]
