@@ -60,5 +60,67 @@
     "jotformSubmissionId": "6306668812075457615",
     "user_id": "1092751498250817567",
     "submitted_at": "2025-08-10T20:28:39.868Z"
+  },
+  {
+    "project_name": "Hall",
+    "unit_no": "A2222",
+    "spa_price": "3,000,000",
+    "nett_price": "2,000,000",
+    "commission_rate": "2.5",
+    "agents": [
+      {
+        "name": "V",
+        "code": "102",
+        "percentage": 100,
+        "commission": "50000.00"
+      }
+    ],
+    "submission_date": "2025-08-10T21:42:24.173Z",
+    "customer_name": "Hakwn",
+    "customer_phone": "Jsnwn",
+    "customer_address": "Jziwm",
+    "spa_date": "2025-07-10",
+    "la_date": "2025-07-10",
+    "dataConfirmed": true,
+    "status": "awaiting_form_completion",
+    "sessionToken": "token_1092751498250817567_1754862183462_ibgzfkc4r",
+    "userId": "1092751498250817567",
+    "username": "victorheng",
+    "jotform": {
+      "formId": "252111999816061",
+      "formUrl": "https://form.jotform.com/252111999816061?user_id=1092751498250817567&price_token=token_1092751498250817567_1754862183462_ibgzfkc4r",
+      "isTemplate": true,
+      "webhookUrl": "https://workspace.victorheng.repl.co/webhook/jotform",
+      "sessionToken": "token_1092751498250817567_1754862183462_ibgzfkc4r"
+    },
+    "uploadedFiles": [
+      {
+        "originalName": "PrintPreview(2).PDF",
+        "finalName": "Hall_A2222_2025-08-10_1754862238397_78gkazgck_PrintPreview(2).PDF",
+        "driveId": "1GHtVpGuhByyVG2Pt6GBHpG7IC5OEuAoK",
+        "driveLink": "https://drive.google.com/file/d/1GHtVpGuhByyVG2Pt6GBHpG7IC5OEuAoK/view?usp=drivesdk",
+        "jotformUrl": "https://www.jotform.com/uploads/victorheng108/252111999816061/6306714092077887766/PrintPreview(2).PDF",
+        "questionId": "4"
+      },
+      {
+        "originalName": "DC-Chinese-Brochure.pdf",
+        "finalName": "Hall_A2222_2025-08-10_1754862249927_dqnehkwbf_DC-Chinese-Brochure.pdf",
+        "driveId": "10wO0QTRqdtrsXWgprFoMjgb9G86Xk9xE",
+        "driveLink": "https://drive.google.com/file/d/10wO0QTRqdtrsXWgprFoMjgb9G86Xk9xE/view?usp=drivesdk",
+        "jotformUrl": "https://www.jotform.com/uploads/victorheng108/252111999816061/6306714092077887766/DC-Chinese-Brochure.pdf",
+        "questionId": "7"
+      },
+      {
+        "originalName": "BHP B-43A-08 Booking Form.pdf",
+        "finalName": "Hall_A2222_2025-08-10_1754862257447_eqzub1x93_BHP B-43A-08 Booking Form.pdf",
+        "driveId": "1s_bZU9psjgUTo9ryQVtCTjN6IxGgHFej",
+        "driveLink": "https://drive.google.com/file/d/1s_bZU9psjgUTo9ryQVtCTjN6IxGgHFej/view?usp=drivesdk",
+        "jotformUrl": "https://www.jotform.com/uploads/victorheng108/252111999816061/6306714092077887766/BHP B-43A-08 Booking Form.pdf",
+        "questionId": "8"
+      }
+    ],
+    "jotformSubmissionId": "6306714092077887766",
+    "user_id": "1092751498250817567",
+    "submitted_at": "2025-08-10T21:44:23.587Z"
   }
 ]
