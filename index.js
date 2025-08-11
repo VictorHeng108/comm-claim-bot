@@ -4063,15 +4063,24 @@ async function transferJotformFilesToGoogleDrive(submissionId, userData) {
                             console.log('Downloading file from Jotform:', fileUrl);
 
                             // Download file from Jotform with proper binary handling
-                            const fileResponse = await fetch(fileUrl);
+                            const fileResponse = await fetch(fileUrl, {
+                                headers: {
+                                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                                    'Accept': '*/*'
+                                }
+                            });
+                            
                             if (!fileResponse.ok) {
                                 console.error('Failed to download file:', fileUrl, 'Status:', fileResponse.status);
                                 continue;
                             }
 
-                            // Use arrayBuffer for better binary file handling
-                            const arrayBuffer = await fileResponse.arrayBuffer();
-                            const fileBuffer = Buffer.from(arrayBuffer);
+                            // Get content type from response headers
+                            const contentType = fileResponse.headers.get('content-type') || 'application/octet-stream';
+                            console.log('File content type from server:', contentType);
+
+                            // Use buffer() method for proper binary handling - this preserves original file integrity
+                            const fileBuffer = await fileResponse.buffer();
 
                             // Validate file size
                             if (fileBuffer.length === 0) {
@@ -4083,67 +4092,88 @@ async function transferJotformFilesToGoogleDrive(submissionId, userData) {
 
                             // Extract filename from URL or create one
                             const urlParts = fileUrl.split('/');
-                            const originalFilename = urlParts[urlParts.length - 1] || `document_${Date.now()}`;
-                            const cleanFilename = originalFilename.split('?')[0]; // Remove query parameters
+                            let originalFilename = urlParts[urlParts.length - 1] || `document_${Date.now()}`;
+                            
+                            // Remove query parameters and decode URL encoding
+                            originalFilename = decodeURIComponent(originalFilename.split('?')[0]);
 
-                            // Validate filename
-                            if (!cleanFilename || cleanFilename.length === 0) {
-                                console.error('Invalid filename extracted from URL:', fileUrl);
-                                continue;
+                            // Keep original filename as much as possible - minimal sanitization
+                            let cleanFilename = originalFilename.replace(/[<>:"/\\|?*]/g, '_');
+                            if (!cleanFilename || cleanFilename.length === 0 || cleanFilename === '_') {
+                                cleanFilename = `document_${Date.now()}.bin`;
                             }
 
-                            // Create a descriptive filename
+                            console.log('Processing file:', cleanFilename, 'Original:', originalFilename);
+
+                            // Create a descriptive filename but preserve original extension
                             const projectName = userData.project_name?.replace(/[^a-zA-Z0-9]/g, '_') || 'project';
                             const timestamp = new Date().toISOString().split('T')[0];
                             const uniqueId = Date.now() + '_' + Math.random().toString(36).substr(2, 9);
                             const finalFilename = `${projectName}_${userData.unit_no || 'unit'}_${timestamp}_${uniqueId}_${cleanFilename}`;
 
                             // Save temporarily with unique path to avoid conflicts
-                            const tempPath = `uploads/temp_${uniqueId}_${cleanFilename}`;
+                            const tempPath = path.join('uploads', `temp_${uniqueId}_${cleanFilename}`);
 
-                            // Write file with binary flag to preserve integrity
-                            await fs.writeFile(tempPath, fileBuffer, { encoding: null });
+                            // Ensure uploads directory exists
+                            try {
+                                await fs.mkdir('uploads', { recursive: true });
+                            } catch (dirError) {
+                                console.log('Uploads directory already exists or created');
+                            }
 
-                            // Verify the written file size matches
+                            // Write file directly from buffer - no additional processing to avoid corruption
+                            await fs.writeFile(tempPath, fileBuffer);
+
+                            // Simple file size verification only
                             const stats = await fs.stat(tempPath);
                             if (stats.size !== fileBuffer.length) {
                                 console.error('File size mismatch after writing:', stats.size, 'vs', fileBuffer.length);
-                                await fs.unlink(tempPath);
+                                try {
+                                    await fs.unlink(tempPath);
+                                } catch (unlinkError) {
+                                    console.error('Failed to cleanup corrupted temp file:', unlinkError);
+                                }
                                 continue;
                             }
 
-                            console.log('File written to temp storage successfully, size:', stats.size, 'bytes');
+                            console.log('File written successfully, size:', stats.size, 'bytes');
 
-                            // Determine MIME type based on file extension
-                            const extension = cleanFilename.toLowerCase().split('.').pop();
-                            let mimeType = 'application/octet-stream';
-                            switch (extension) {
-                                case 'pdf': mimeType = 'application/pdf'; break;
-                                case 'doc': mimeType = 'application/msword'; break;
-                                case 'docx': mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'; break;
-                                case 'xlsx': mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'; break;
-                                case 'xls': mimeType = 'application/vnd.ms-excel'; break;
-                                case 'pptx': mimeType = 'application/vnd.openxmlformats-officedocument.presentationml.presentation'; break;
-                                case 'ppt': mimeType = 'application/vnd.ms-powerpoint'; break;
-                                case 'jpg':
-                                case 'jpeg': mimeType = 'image/jpeg'; break;
-                                case 'png': mimeType = 'image/png'; break;
-                                case 'gif': mimeType = 'image/gif'; break;
-                                case 'bmp': mimeType = 'image/bmp'; break;
-                                case 'tiff':
-                                case 'tif': mimeType = 'image/tiff'; break;
+                            // Use server-provided content type or detect from extension
+                            let mimeType = contentType;
+                            
+                            // Only override if content type is generic
+                            if (mimeType === 'application/octet-stream' || mimeType === 'application/binary') {
+                                const extension = cleanFilename.toLowerCase().split('.').pop();
+                                switch (extension) {
+                                    case 'pdf': mimeType = 'application/pdf'; break;
+                                    case 'doc': mimeType = 'application/msword'; break;
+                                    case 'docx': mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'; break;
+                                    case 'xlsx': mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'; break;
+                                    case 'xls': mimeType = 'application/vnd.ms-excel'; break;
+                                    case 'jpg':
+                                    case 'jpeg': mimeType = 'image/jpeg'; break;
+                                    case 'png': mimeType = 'image/png'; break;
+                                    case 'gif': mimeType = 'image/gif'; break;
+                                    case 'txt': mimeType = 'text/plain'; break;
+                                    default: mimeType = 'application/octet-stream'; break;
+                                }
                             }
 
                             // Upload to Google Drive with organized folder structure
-                            console.log('Uploading to Google Drive:', finalFilename, 'MIME type:', mimeType);
+                            console.log('Uploading to Google Drive:', finalFilename);
+                            console.log('MIME type:', mimeType);
+                            console.log('File size:', stats.size, 'bytes');
+                            
                             const enhancedUserData = {
                                 ...userData,
                                 username: userData.username || 'Unknown User'
                             };
+                            
                             const driveFile = await uploadToCompanyGoogleDrive(tempPath, finalFilename, mimeType, enhancedUserData);
 
                             uploadedFiles.push({
-                                originalName: cleanFilename,
+                                originalName: originalFilename, // Store actual original filename
+                                cleanName: cleanFilename,
                                 finalName: finalFilename,
                                 driveId: driveFile.id,
                                 driveLink: driveFile.webViewLink,
@@ -4153,10 +4183,19 @@ async function transferJotformFilesToGoogleDrive(submissionId, userData) {
                                 mimeType: mimeType
                             });
 
-                            // Clean up temp file
-                            await fs.unlink(tempPath);
+                            // Clean up temp file after successful upload
+                            try {
+                                await fs.unlink(tempPath);
+                                console.log('Temp file cleaned up:', tempPath);
+                            } catch (cleanupError) {
+                                console.error('Failed to cleanup temp file:', tempPath, cleanupError);
+                                // Continue anyway since upload was successful
+                            }
 
-                            console.log('File successfully transferred:', finalFilename, 'Size:', stats.size, 'bytes');
+                            console.log('✅ File successfully transferred:', finalFilename);
+                            console.log('✅ Original filename:', originalFilename);
+                            console.log('✅ File size:', stats.size, 'bytes');
+                            console.log('✅ Google Drive ID:', driveFile.id);
 
                         } catch (fileError) {
                             console.error('Error processing individual file:', fileError);
