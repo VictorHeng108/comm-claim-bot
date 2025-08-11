@@ -2,49 +2,204 @@ const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, ActionRowB
 const { google } = require('googleapis');
 const { Octokit } = require('@octokit/rest');
 const express = require('express');
+const session = require('express-session');
 const multer = require('multer');
 const fs = require('fs').promises;
 const path = require('path');
 const settings = require('./settings.json');
 const fetch = require('node-fetch');
+const { zonedTimeToUtc, utcToZonedTime, format } = require('date-fns-tz');
+
+// GMT+8 timezone constant
+const GMT8_TIMEZONE = 'Asia/Singapore'; // Singapore is in GMT+8
+
+// Helper function to format dates to GMT+8
+function formatGMT8DateString(date) {
+    return format(date, 'yyyy-MM-dd HH:mm:ss XXX', { timeZone: GMT8_TIMEZONE });
+}
+
+// Helper function to get current date in GMT+8
+function getGMT8Date() {
+    return zonedTimeToUtc(Date.now(), GMT8_TIMEZONE);
+}
+
+
+// FaJotform configuration
+const JOTFORM_API_KEY = process.env.JOTFORM_API_KEY;
+const JOTFORM_BASE_URL = 'https://api.jotform.com/v1';
+const JOTFORM_TEMPLATE_ID = process.env.JOTFORM_TEMPLATE_ID; // Create one reusable form
+
+// Notification channel
+const NOTIFICATION_CHANNEL_ID = '1400401242064162826';
 
 // Initialize Discord client
 const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages]
 });
 
+// OAuth configuration
+const GOOGLE_OAUTH_SECRETS = process.env.GOOGLE_OAUTH_SECRETS;
+let oauth_config = null;
+
+if (GOOGLE_OAUTH_SECRETS) {
+    oauth_config = JSON.parse(GOOGLE_OAUTH_SECRETS);
+} else {
+    console.error('❌ GOOGLE_OAUTH_SECRETS environment variable not set');
+}
+
 // Initialize services
-let drive, forms, octokit;
+let drive, octokit;
 const app = express();
 const upload = multer({ dest: 'uploads/' });
 
-// Store submission data temporarily
+// Session configuration
+app.use(session({
+    secret: process.env.SESSION_SECRET || 'your-secret-key',
+    resave: false,
+    saveUninitialized: false,
+    cookie: { 
+        secure: false, // Set to true in production with HTTPS
+        maxAge: 24 * 60 * 60 * 1000 // 24 hours
+    }
+}));
+
+// Store submission data temporarily with unique tokens
 const submissions = new Map();
+const tokenToUserId = new Map(); // Maps tokens to user IDs
 
-// Initialize Google Drive with Service Account
-async function initializeGoogleDrive() {
+// Store fast commission percentages per project (default 50%)
+const fastCommissionPercentages = new Map(); // Maps project names to percentages
+
+// Store processing confirmation state to prevent duplicate actions
+const processingConfirmations = new Map();
+const processedSubmissions = new Set(); // Track submission IDs that have been processed
+const processingSubmissions = new Set(); // Track submission IDs currently being processed
+const processedTokens = new Set(); // Track session tokens that have been processed
+const notificationsSent = new Set(); // Track notifications sent to prevent duplicate notifications
+const userFolderCache = new Map(); // Cache folder IDs for each user submission to prevent duplicate folders
+
+// Load fast commission percentages from GitHub backup
+async function loadFastCommissionPercentages() {
     try {
-        const serviceAccount = JSON.parse(process.env.G_DRIVE_SERVICE_ACCOUNT || '{}');
-
-        const auth = new google.auth.GoogleAuth({
-            credentials: serviceAccount,
-            scopes: [
-                'https://www.googleapis.com/auth/drive.file',
-                'https://www.googleapis.com/auth/drive',
-                'https://www.googleapis.com/auth/forms.body',
-                'https://www.googleapis.com/auth/forms',
-                'https://www.googleapis.com/auth/forms',
-                'https://www.googleapis.com/auth/drive.metadata'
-            ]
+        const { data } = await octokit.rest.repos.getContent({
+            owner: settings.github.owner,
+            repo: settings.github.repo,
+            path: `${settings.github.backupPath}/fast_commission_settings.json`
         });
 
-        drive = google.drive({ version: 'v3', auth });
-        forms = google.forms({ version: 'v1', auth });
-        console.log('Google Drive and Forms API initialized with Service Account');
+        const content = Buffer.from(data.content, 'base64').toString();
+        const percentageData = JSON.parse(content);
+
+        // Load percentages into memory
+        for (const [projectName, percentage] of Object.entries(percentageData)) {
+            fastCommissionPercentages.set(projectName.toLowerCase(), percentage);
+        }
+
+        console.log(`✅ Loaded ${fastCommissionPercentages.size} fast commission percentage settings from GitHub`);
     } catch (error) {
-        console.error('Failed to initialize Google Drive:', error);
-        console.error('Make sure G_DRIVE_SERVICE_ACCOUNT environment variable is set with your Service Account JSON');
+        if (error.status === 404) {
+            console.log('No existing fast commission settings found in GitHub, starting fresh');
+        } else {
+            console.log('Error loading fast commission percentages from GitHub:', error.message);
+        }
     }
+}
+
+// Save fast commission percentage to GitHub backup
+async function saveFastCommissionPercentage(projectName, percentage) {
+    try {
+        // Update in-memory map
+        fastCommissionPercentages.set(projectName.toLowerCase(), percentage);
+
+        // Convert Map to plain object for JSON storage
+        const percentageData = {};
+        for (const [project, percent] of fastCommissionPercentages.entries()) {
+            percentageData[project] = percent;
+        }
+
+        const content = Buffer.from(JSON.stringify(percentageData, null, 2)).toString('base64');
+
+        // Try to get existing file to get SHA
+        let sha;
+        try {
+            const { data: existing } = await octokit.rest.repos.getContent({
+                owner: settings.github.owner,
+                repo: settings.github.repo,
+                path: `${settings.github.backupPath}/fast_commission_settings.json`
+            });
+            sha = existing.sha;
+        } catch (error) {
+            // File doesn't exist, will create new
+        }
+
+        await octokit.rest.repos.createOrUpdateFileContents({
+            owner: settings.github.owner,
+            repo: settings.github.repo,
+            path: `${settings.github.backupPath}/fast_commission_settings.json`,
+            message: `Update fast commission percentage for ${projectName}: ${percentage}% - ${new Date().toISOString()}`,
+            content: content,
+            sha: sha
+        });
+
+        console.log(`✅ Saved fast commission percentage for ${projectName}: ${percentage}% to GitHub`);
+        return true;
+    } catch (error) {
+        console.error('Error saving fast commission percentage to GitHub:', error);
+        return false;
+    }
+}
+
+// Get fast commission percentage for a project (default 50%)
+function getFastCommissionPercentage(projectName) {
+    return fastCommissionPercentages.get(projectName.toLowerCase()) || 50;
+}
+
+// Initialize Google Drive with OAuth delegation
+async function initializeGoogleDrive() {
+    if (!oauth_config) {
+        console.error('❌ OAuth configuration not available');
+        return;
+    }
+    console.log('✅ Google Drive OAuth delegation configured');
+}
+
+// Create OAuth flow for user authentication
+function createOAuthFlow() {
+    if (!oauth_config) {
+        throw new Error('OAuth configuration not available');
+    }
+
+    const oauth_flow = new google.auth.OAuth2(
+        oauth_config.web.client_id,
+        oauth_config.web.client_secret,
+        oauth_config.web.redirect_uris[0]
+    );
+
+    return oauth_flow;
+}
+
+// Create Google Drive instance with user credentials
+function createUserGoogleDrive(accessToken) {
+    const oauth_client = new google.auth.OAuth2();
+    oauth_client.setCredentials({ access_token: accessToken });
+
+    return google.drive({ version: 'v3', auth: oauth_client });
+}
+
+// Initialize Jotform API
+function initializeJotform() {
+    if (!JOTFORM_API_KEY) {
+        console.error('❌ JOTFORM_API_KEY environment variable not set');
+        console.error('Please add your Jotform API key to environment variables');
+        return false;
+    }
+    if (!JOTFORM_TEMPLATE_ID) {
+        console.error('❌ JOTFORM_TEMPLATE_ID environment variable not set');
+        console.error('Please create a template form and add its ID to environment variables');
+        return false;
+    }
+    console.log('✅ Jotform API initialized');
+    return true;
 }
 
 // Initialize GitHub
@@ -77,29 +232,45 @@ async function saveBackupToGitHub(data) {
     try {
         const content = Buffer.from(JSON.stringify(data, null, 2)).toString('base64');
 
-        // Try to get existing file to get SHA
-        let sha;
-        try {
-            const { data: existing } = await octokit.rest.repos.getContent({
-                owner: settings.github.owner,
-                repo: settings.github.repo,
-                path: `${settings.github.backupPath}/submissions.json`
-            });
-            sha = existing.sha;
-        } catch (error) {
-            // File doesn't exist, will create new
+        // Retry logic for concurrent updates
+        let retries = 3;
+        while (retries > 0) {
+            try {
+                // Try to get existing file to get SHA
+                let sha;
+                try {
+                    const { data: existing } = await octokit.rest.repos.getContent({
+                        owner: settings.github.owner,
+                        repo: settings.github.repo,
+                        path: `${settings.github.backupPath}/submissions.json`
+                    });
+                    sha = existing.sha;
+                } catch (error) {
+                    // File doesn't exist, will create new
+                }
+
+                await octokit.rest.repos.createOrUpdateFileContents({
+                    owner: settings.github.owner,
+                    repo: settings.github.repo,
+                    path: `${settings.github.backupPath}/submissions.json`,
+                    message: `Update submissions backup - ${new Date().toISOString()}`,
+                    content: content,
+                    sha: sha
+                });
+
+                console.log('Backup saved to GitHub');
+                return; // Success, exit retry loop
+            } catch (error) {
+                if (error.status === 409 && retries > 1) {
+                    console.log(`GitHub backup conflict, retrying... (${retries - 1} attempts left)`);
+                    // Wait a bit before retry
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    retries--;
+                } else {
+                    throw error; // Re-throw if not a conflict or no retries left
+                }
+            }
         }
-
-        await octokit.rest.repos.createOrUpdateFileContents({
-            owner: settings.github.owner,
-            repo: settings.github.repo,
-            path: `${settings.github.backupPath}/submissions.json`,
-            message: `Update submissions backup - ${new Date().toISOString()}`,
-            content: content,
-            sha: sha
-        });
-
-        console.log('Backup saved to GitHub');
     } catch (error) {
         console.error('Failed to save backup to GitHub:', error);
     }
@@ -242,37 +413,39 @@ function createCustomerModal(existingData = {}) {
             .setCustomId('customer_name')
             .setLabel('Customer Name')
             .setStyle(TextInputStyle.Short)
-            .setRequired(true)
-            .setValue(existingData.customer_name || ''),
+            .setRequired(true),
 
         new TextInputBuilder()
             .setCustomId('customer_phone')
             .setLabel('Customer Phone')
             .setStyle(TextInputStyle.Short)
-            .setRequired(true)
-            .setValue(existingData.customer_phone || ''),
+            .setRequired(true),
 
         new TextInputBuilder()
             .setCustomId('customer_address')
             .setLabel('Customer Address')
             .setStyle(TextInputStyle.Paragraph)
-            .setRequired(true)
-            .setValue(existingData.customer_address || ''),
+            .setRequired(true),
 
         new TextInputBuilder()
             .setCustomId('spa_date')
             .setLabel('SPA Date (YYYY-MM-DD)')
             .setStyle(TextInputStyle.Short)
-            .setRequired(true)
-            .setValue(existingData.spa_date || ''),
+            .setRequired(true),
 
         new TextInputBuilder()
             .setCustomId('la_date')
             .setLabel('LA Date (YYYY-MM-DD)')
             .setStyle(TextInputStyle.Short)
             .setRequired(true)
-            .setValue(existingData.la_date || '')
     ];
+
+    // Set values only if existing data exists
+    if (existingData.customer_name) components[0].setValue(existingData.customer_name);
+    if (existingData.customer_phone) components[1].setValue(existingData.customer_phone);
+    if (existingData.customer_address) components[2].setValue(existingData.customer_address);
+    if (existingData.spa_date) components[3].setValue(existingData.spa_date);
+    if (existingData.la_date) components[4].setValue(existingData.la_date);
 
     components.forEach(component => {
         modal.addComponents(new ActionRowBuilder().addComponents(component));
@@ -325,27 +498,72 @@ function createConfirmationEmbed(data) {
         .setTitle('📋 Commission Submission Confirmation')
         .setColor(0x00AE86)
         .addFields(
-            { name: '🏢 Project Details', value: `**Project:** ${data.project_name}\n**Unit:** ${data.unit_no}\n**SPA Price:** RM${data.spa_price}\n**Nett Price:** RM${Number(String(data.nett_price).replace(/,/g, '')).toLocaleString()}\n**Commission Rate:** ${data.commission_rate}%`, inline: false },
-            { name: '👤 Customer Details', value: `**Name:** ${data.customer_name}\n**Phone:** ${data.customer_phone}\n**Address:** ${data.customer_address}`, inline: false },
-            { name: '📅 Important Dates', value: `**SPA Date:** ${data.spa_date}\n**LA Date:** ${data.la_date}`, inline: false }
+            { name: '🏢 Project Details', value: `**Project:** ${data.project_name}\n**Unit:** ${data.unit_no}\n**SPA Price:** RM${Number(String(data.spa_price).replace(/,/g, '')).toLocaleString()}\n**Nett Price:** RM${Number(String(data.nett_price).replace(/,/g, '')).toLocaleString()}\n**Commission Rate:** ${data.commission_rate}%\n\n`, inline: false },
+            { name: '👤 Customer Details', value: `**Name:** ${data.customer_name}\n**Phone:** ${data.customer_phone}\n**Address:** ${data.customer_address}\n\n`, inline: false },
+            { name: '📅 Important Dates', value: `**SPA Date:** ${data.spa_date}\n**LA Date:** ${data.la_date}\n\n`, inline: false }
         )
         .setTimestamp();
 
     // Add agent details
     const agentDetails = data.agents
         .filter(agent => agent.name)
-        .map(agent => `**${agent.name}** (${agent.code}): ${agent.percentage}% - RM${agent.commission}`)
+        .map(agent => {
+            const formattedCommission = Number(agent.commission).toLocaleString('en-US', {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+            });
+            return `**${agent.name}** (${agent.code}): ${agent.percentage}% - RM${formattedCommission}`;
+        })
         .join('\n');
 
     if (agentDetails) {
-        embed.addFields({ name: '👥 Agent Commission Breakdown', value: agentDetails, inline: false });
+        embed.addFields({ name: '👥 Agent Commission Breakdown', value: `${agentDetails}\n\n`, inline: false });
 
         const totalCommission = data.agents.reduce((sum, agent) => sum + parseFloat(agent.commission || 0), 0);
-        embed.addFields({ name: '💰 Total Commission', value: `RM${totalCommission.toFixed(2)}`, inline: true });
+        const formattedTotalCommission = totalCommission.toLocaleString('en-US', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        });
+        embed.addFields({ name: '💰 Total Commission', value: `RM${formattedTotalCommission}\n\n`, inline: true });
+
+        // Add Fast Commission section
+        const fastCommissionPercentage = getFastCommissionPercentage(data.project_name);
+        const fastCommissionAmount = (totalCommission * fastCommissionPercentage) / 100;
+
+        // Calculate fast commission for each agent
+        const fastCommissionDetails = data.agents
+            .filter(agent => agent.name)
+            .map(agent => {
+                const agentFastCommission = (parseFloat(agent.commission) * fastCommissionPercentage) / 100;
+                const formattedAgentFastCommission = agentFastCommission.toLocaleString('en-US', {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2
+                });
+                return `**${agent.name}**: RM${formattedAgentFastCommission}`;
+            })
+            .join('\n');
+
+        embed.addFields({ 
+            name: `⚡ Fast Commission (${fastCommissionPercentage}%)`, 
+            value: `${fastCommissionDetails}\n\n`, 
+            inline: false 
+        });
+        
+        const formattedFastCommissionAmount = fastCommissionAmount.toLocaleString('en-US', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        });
+        embed.addFields({ 
+            name: '💸 Total Fast Commission', 
+            value: `RM${formattedFastCommissionAmount}\n\n`, 
+            inline: true 
+        });
     }
 
     return embed;
 }
+
+
 
 // Bot ready event
 client.once('ready', async () => {
@@ -354,69 +572,151 @@ client.once('ready', async () => {
     // Initialize services
     await initializeGoogleDrive();
     initializeGitHub();
+    initializeJotform();
+    await loadFastCommissionPercentages();
 
-    // Register public commands globally
+    // First, clear ALL global commands to start fresh (multiple attempts for stubborn commands)
+    for (let attempt = 1; attempt <= 2; attempt++) {
+        const globalCommands = await client.application.commands.fetch();
+        console.log(`🔍 Attempt ${attempt}: Found ${globalCommands.size} global commands`);
+        
+        for (const command of globalCommands.values()) {
+            try {
+                await client.application.commands.delete(command.id);
+                console.log(`🗑️ Deleted global command: ${command.name}`);
+            } catch (error) {
+                console.log(`⚠️ Failed to delete ${command.name}:`, error.message);
+            }
+        }
+        
+        // Wait between attempts
+        await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+
+    // Final verification that no admin commands exist globally
+    const finalGlobalCommands = await client.application.commands.fetch();
+    const adminCommandsInGlobal = finalGlobalCommands.filter(cmd => cmd.name === 'admin-action');
+    if (adminCommandsInGlobal.size > 0) {
+        console.log('⚠️ WARNING: Still found admin commands globally, force deleting...');
+        for (const cmd of adminCommandsInGlobal.values()) {
+            try {
+                await client.application.commands.delete(cmd.id);
+                console.log('🗑️ Force deleted admin command:', cmd.name);
+            } catch (error) {
+                console.log('❌ Could not force delete:', error.message);
+            }
+        }
+    }
+
+    // Wait longer for Discord to process all deletions
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    // Register ONLY public commands globally (admin-action should NOT be here)
     const publicCommands = [
         new SlashCommandBuilder()
             .setName('fast-comm-submission')
-            .setDescription('Submit commission claim with document upload')
+            .setDescription('Submit commission claim with document upload'),
+        new SlashCommandBuilder()
+            .setName('check-my-upload')
+            .setDescription('Check your submission status and uploaded documents')
     ];
 
-    // Register public commands globally
-    for (const command of publicCommands) {
-        await client.application.commands.create(command);
-    }
+    // Set global commands to ONLY the public commands (this replaces all global commands)
+    await client.application.commands.set(publicCommands);
+    console.log('✅ Public commands (fast-comm-submission, check-my-upload) registered globally');
 
-    // Register admin commands only in your specific Discord server
+    // Register admin commands ONLY in the specific admin guild
     const adminGuildId = "1118938632250732544"; // Your Discord server ID
-    const guild = client.guilds.cache.get(adminGuildId);
 
-    if (guild) {
-        // Define admin commands for guild-only registration
-        const adminCommands = [
-            new SlashCommandBuilder()
-                .setName('check-comm-submit')
-                .setDescription('Check commission submission data (Admin only)')
-                .addStringOption(option =>
-                    option.setName('user_id')
-                        .setDescription('User ID to check (optional)')
-                        .setRequired(false))
-                .addIntegerOption(option =>
-                    option.setName('limit')
-                        .setDescription('Number of recent submissions to show (default: 10)')
-                        .setRequired(false)),
+    try {
+        // Wait for guild to be available
+        await client.guilds.fetch(adminGuildId);
+        const guild = client.guilds.cache.get(adminGuildId);
 
-            new SlashCommandBuilder()
-                .setName('amend-submission')
-                .setDescription('Delete or amend submission data (Admin only)')
-                .addStringOption(option =>
-                    option.setName('action')
-                        .setDescription('Action to perform')
-                        .setRequired(true)
-                        .addChoices(
-                            { name: 'List Recent', value: 'list' },
-                            { name: 'Delete by Index', value: 'delete' },
-                            { name: 'View Details', value: 'view' }
-                        ))
-                .addIntegerOption(option =>
-                    option.setName('index')
-                        .setDescription('Index number of submission (for delete/view)')
-                        .setRequired(false))
-        ];
+        if (guild) {
+            // Define admin commands for guild-only registration with proper permission restrictions
+            const adminCommands = [
+                new SlashCommandBuilder()
+                    .setName('admin-action')
+                    .setDescription('Admin actions for submission management (Admin only)')
+                    .setDefaultMemberPermissions('0') // This hides the command from all users without Administrator permission
+                    .addStringOption(option =>
+                        option.setName('action')
+                            .setDescription('Action to perform')
+                            .setRequired(true)
+                            .addChoices(
+                                { name: 'Check Submissions', value: 'check_submissions' },
+                                { name: 'List Recent', value: 'list' },
+                                { name: 'Delete by Index', value: 'delete' },
+                                { name: 'Bulk Delete', value: 'bulk_delete' },
+                                { name: 'View Details', value: 'view' },
+                                { name: 'Adjust Fast Commission %', value: 'adjust_fast_comm' },
+                                { name: 'View Fast Commission Settings', value: 'view_fast_comm_settings' }
+                            ))
+                    .addStringOption(option =>
+                        option.setName('user_id')
+                            .setDescription('User ID to check (for check_submissions)')
+                            .setRequired(false))
+                    .addIntegerOption(option =>
+                        option.setName('limit')
+                            .setDescription('Number of recent submissions to show (for check_submissions, default: 10)')
+                            .setRequired(false))
+                    .addIntegerOption(option =>
+                        option.setName('index')
+                            .setDescription('Index number of submission (for delete/view)')
+                            .setRequired(false))
+                    .addStringOption(option =>
+                        option.setName('indices')
+                            .setDescription('Comma-separated indices for bulk delete (e.g., 1,3,5-8,12)')
+                            .setRequired(false))
+                    .addStringOption(option =>
+                        option.setName('project_name')
+                            .setDescription('Project name (for adjust_fast_comm)')
+                            .setRequired(false))
+                    .addNumberOption(option =>
+                        option.setName('percentage')
+                            .setDescription('Fast commission percentage 0-100 (for adjust_fast_comm)')
+                            .setRequired(false)
+                            .setMinValue(0)
+                            .setMaxValue(100))
+                    .addBooleanOption(option =>
+                        option.setName('confirm')
+                            .setDescription('Confirm bulk deletion (required for bulk delete)')
+                            .setRequired(false))
+            ];
 
-        // Replace all guild commands at once to prevent duplicates
-        await guild.commands.set(adminCommands);
-        console.log(`✅ Admin commands registered only in: ${guild.name}`);
-    } else {
-        console.log('❌ Admin guild not found - admin commands not registered');
+            // Set admin commands ONLY in the guild (this replaces ALL guild commands)
+            await guild.commands.set(adminCommands);
+            console.log(`✅ Admin command (admin-action) registered ONLY in admin guild: ${guild.name}`);
+
+            // Final verification that admin commands are NOT in global scope
+            const finalGlobalCommands = await client.application.commands.fetch();
+            const adminInGlobal = finalGlobalCommands.find(cmd => cmd.name === 'admin-action');
+            if (adminInGlobal) {
+                console.log('❌ WARNING: admin-action still found in global commands, force removing...');
+                await client.application.commands.delete(adminInGlobal.id);
+                console.log('✅ Force removed admin-action from global commands');
+            } else {
+                console.log('✅ CONFIRMED: admin-action is hidden from all users except in admin guild');
+            }
+        } else {
+            console.log('❌ Admin guild not found - admin commands not registered');
+        }
+    } catch (error) {
+        console.error('❌ Error setting up admin commands:', error);
     }
 
-    console.log('✅ Public commands registered globally');
+    console.log('✅ Command visibility properly configured:');
+    console.log('  - fast-comm-submission: VISIBLE to all users globally');
+    console.log('  - check-my-upload: VISIBLE to all users globally'); 
+    console.log('  - admin-action: HIDDEN from regular users, only visible in admin guild');
 
     // Start express server
-    const port = process.env.PORT || 3000;
+    const port = process.env.PORT || 5000;
     app.listen(port, '0.0.0.0', () => {
         console.log(`Express server running on port ${port}`);
+        console.log(`Webhook test URL: https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.repl.co/webhook/test`);
+        console.log(`Webhook URL: https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.repl.co/webhook/jotform`);
     });
 });
 
@@ -528,73 +828,203 @@ client.on('messageCreate', async message => {
 client.on('interactionCreate', async interaction => {
     const userId = interaction.user.id;
 
+    // Check if interaction is used in the allowed channel for ALL interaction types
+    const ALLOWED_CHANNEL_ID = '1400381115285508156';
+    if (interaction.channelId !== ALLOWED_CHANNEL_ID) {
+        if (interaction.isCommand()) {
+            await interaction.reply({
+                content: `❌ This command can only be used in <#${ALLOWED_CHANNEL_ID}>`,
+                ephemeral: true
+            });
+        } else if (interaction.isButton() || interaction.isModalSubmit()) {
+            try {
+                if (interaction.replied || interaction.deferred) {
+                    await interaction.followUp({
+                        content: `❌ This bot can only be used in <#${ALLOWED_CHANNEL_ID}>`,
+                        ephemeral: true
+                    });
+                } else {
+                    await interaction.reply({
+                        content: `❌ This bot can only be used in <#${ALLOWED_CHANNEL_ID}>`,
+                        ephemeral: true
+                    });
+                }
+            } catch (error) {
+                console.error('Error responding to interaction outside allowed channel:', error);
+            }
+        }
+        return;
+    }
+
     // Handle slash commands
     if (interaction.isCommand()) {
-        if (interaction.commandName === 'check-comm-submit') {
+
+        if (interaction.commandName === 'admin-action') {
+            // Check if user has admin permissions - only for bot owner or specific role
+            const allowedUserId = '1223928653265973288'; // Bot owner ID
+            const adminGuildId = '1118938632250732544';
+            const allowedRoleId = '1404203519921356834'; // Specific role ID
+
+            let hasAdminAccess = false;
+
+            // Check if user is the bot owner
+            if (interaction.user.id === allowedUserId) {
+                hasAdminAccess = true;
+            }
+            // Check if user has the specific role in the admin guild
+            else if (interaction.guildId === adminGuildId) {
+                const member = await interaction.guild.members.fetch(interaction.user.id);
+                hasAdminAccess = member.roles.cache.has(allowedRoleId);
+            }
+
+            if (!hasAdminAccess) {
+                await interaction.reply({
+                    content: '❌ You do not have permission to use this command.',
+                    ephemeral: true
+                });
+                return;
+            }
 
             try {
-                const backupData = await loadBackupFromGitHub();
-                const userIdFilter = interaction.options.getString('user_id');
-                const limit = interaction.options.getInteger('limit') || 10;
+                const action = interaction.options.getString('action');
 
-                let filteredData = backupData;
-                if (userIdFilter) {
-                    filteredData = backupData.filter(submission => 
-                        submission.user_id === userIdFilter || 
-                        submission.username?.toLowerCase().includes(userIdFilter.toLowerCase())
-                    );
-                }
+                if (action === 'check_submissions') {
+                    const userIdFilter = interaction.options.getString('user_id');
+                    const limit = interaction.options.getInteger('limit') || 10;
+                    const backupData = await loadBackupFromGitHub();
 
-                const recentSubmissions = filteredData.slice(-limit).reverse();
+                    let filteredData = backupData;
+                    if (userIdFilter) {
+                        filteredData = backupData.filter(submission => 
+                            submission.user_id === userIdFilter || 
+                            submission.username?.toLowerCase().includes(userIdFilter.toLowerCase())
+                        );
+                    }
 
-                if (recentSubmissions.length === 0) {
+                    const recentSubmissions = filteredData.slice(-limit).reverse();
+
+                    if (recentSubmissions.length === 0) {
+                        await interaction.reply({
+                            content: userIdFilter ? 
+                                `❌ No submissions found for user: ${userIdFilter}` : 
+                                '❌ No submissions found in database.',
+                            ephemeral: true
+                        });
+                        return;
+                    }
+
+                    const embed = new EmbedBuilder()
+                        .setTitle('📊 Commission Submissions Data')
+                        .setColor(0x0099FF)
+                        .setDescription(`Showing ${recentSubmissions.length} submission(s)${userIdFilter ? ` for user: ${userIdFilter}` : ''}`)
+                        .setTimestamp();
+
+                    recentSubmissions.forEach((submission, index) => {
+                        const submissionIndex = backupData.indexOf(submission);
+                        const totalCommission = submission.agents
+                            ?.filter(agent => agent.name)
+                            ?.reduce((sum, agent) => sum + parseFloat(agent.commission || 0), 0) || 0;
+
+                        embed.addFields({
+                            name: `#${submissionIndex} - ${submission.project_name}`,
+                            value: `**User:** ${submission.username} (${submission.user_id})\n**Unit:** ${submission.unit_no}\n**Nett Price:** RM${Number(String(submission.nett_price).replace(/,/g, '')).toLocaleString()}\n**Total Commission:** RM${totalCommission.toFixed(2)}\n**Submitted:** ${new Date(submission.submitted_at).toLocaleString()}`,
+                            inline: false
+                        });
+                    });
+
                     await interaction.reply({
-                        content: userIdFilter ? 
-                            `❌ No submissions found for user: ${userIdFilter}` : 
-                            '❌ No submissions found in database.',
+                        embeds: [embed],
                         ephemeral: true
                     });
                     return;
                 }
 
-                const embed = new EmbedBuilder()
-                    .setTitle('📊 Commission Submissions Data')
-                    .setColor(0x0099FF)
-                    .setDescription(`Showing ${recentSubmissions.length} submission(s)${userIdFilter ? ` for user: ${userIdFilter}` : ''}`)
-                    .setTimestamp();
+                else if (action === 'adjust_fast_comm') {
+                    const projectName = interaction.options.getString('project_name');
+                    const percentage = interaction.options.getNumber('percentage');
 
-                recentSubmissions.forEach((submission, index) => {
-                    const submissionIndex = backupData.indexOf(submission);
-                    const totalCommission = submission.agents
-                        ?.filter(agent => agent.name)
-                        ?.reduce((sum, agent) => sum + parseFloat(agent.commission || 0), 0) || 0;
+                    if (!projectName || percentage === null) {
+                        await interaction.reply({
+                            content: '❌ Please provide both project_name and percentage for fast commission adjustment.',
+                            ephemeral: true
+                        });
+                        return;
+                    }
+
+                    // Save the fast commission percentage
+                    const saved = await saveFastCommissionPercentage(projectName, percentage);
+
+                    if (saved) {
+                        const embed = new EmbedBuilder()
+                            .setTitle('✅ Fast Commission Percentage Updated')
+                            .setColor(0x28A745)
+                            .addFields(
+                                { name: '🏢 Project Name', value: projectName, inline: true },
+                                { name: '💰 Fast Commission %', value: `${percentage}%`, inline: true },
+                                { name: '📋 Status', value: 'Setting saved successfully', inline: false }
+                            )
+                            .setTimestamp();
+
+                        await interaction.reply({
+                            embeds: [embed],
+                            ephemeral: true
+                        });
+                    } else {
+                        await interaction.reply({
+                            content: '❌ Failed to save fast commission percentage. Please try again.',
+                            ephemeral: true
+                        });
+                    }
+                    return;
+                }
+
+                else if (action === 'view_fast_comm_settings') {
+                    if (fastCommissionPercentages.size === 0) {
+                        await interaction.reply({
+                            content: '📋 **No custom fast commission settings found**\n\nAll projects will use the default 50% fast commission rate.\n\nUse `/admin-action` with `adjust_fast_comm` to set custom percentages for specific projects.',
+                            ephemeral: true
+                        });
+                        return;
+                    }
+
+                    const embed = new EmbedBuilder()
+                        .setTitle('💰 Fast Commission Settings')
+                        .setColor(0x0099FF)
+                        .setDescription('Custom fast commission percentages by project')
+                        .setTimestamp();
+
+                    const settings = Array.from(fastCommissionPercentages.entries());
+
+                    // Group settings into fields (max 25 fields, each max 1024 chars)
+                    const maxPerField = 10;
+                    for (let i = 0; i < settings.length; i += maxPerField) {
+                        const fieldSettings = settings.slice(i, i + maxPerField);
+                        const fieldValue = fieldSettings
+                            .map(([project, percentage]) => `**${project}**: ${percentage}%`)
+                            .join('\n');
+
+                        embed.addFields({
+                            name: i === 0 ? '🏢 Project Settings' : `🏢 Project Settings (continued ${Math.floor(i / maxPerField) + 1})`,
+                            value: fieldValue,
+                            inline: false
+                        });
+                    }
 
                     embed.addFields({
-                        name: `#${submissionIndex} - ${submission.project_name}`,
-                        value: `**User:** ${submission.username} (${submission.user_id})\n**Unit:** ${submission.unit_no}\n**Nett Price:** RM${Number(String(submission.nett_price).replace(/,/g, '')).toLocaleString()}\n**Total Commission:** RM${totalCommission.toFixed(2)}\n**Submitted:** ${new Date(submission.submitted_at).toLocaleString()}`,
+                        name: '📋 Default Setting',
+                        value: 'Projects not listed above use **50%** fast commission rate',
                         inline: false
                     });
-                });
 
-                await interaction.reply({
-                    embeds: [embed],
-                    ephemeral: true
-                });
+                    await interaction.reply({
+                        embeds: [embed],
+                        ephemeral: true
+                    });
+                    return;
+                }
 
-            } catch (error) {
-                console.error('Error checking submissions:', error);
-                await interaction.reply({
-                    content: '❌ Error retrieving submission data from GitHub.',
-                    ephemeral: true
-                });
-            }
-        }
-
-        else if (interaction.commandName === 'amend-submission') {
-
-            try {
-                const action = interaction.options.getString('action');
                 const index = interaction.options.getInteger('index');
+                const confirmDelete = interaction.options.getBoolean('confirm');
                 const backupData = await loadBackupFromGitHub();
 
                 if (action === 'list') {
@@ -611,7 +1041,7 @@ client.on('interactionCreate', async interaction => {
                     const embed = new EmbedBuilder()
                         .setTitle('📝 Recent Submissions for Amendment')
                         .setColor(0xFF9900)
-                        .setDescription('Use the index number with `/amend-submission` to delete or view details')
+                        .setDescription('Use the index number with `/admin-action` to delete or view details')
                         .setTimestamp();
 
                     recentSubmissions.forEach((submission, displayIndex) => {
@@ -684,6 +1114,94 @@ client.on('interactionCreate', async interaction => {
                     });
                 }
 
+                else if (action === 'bulk_delete') {
+                    const indices = interaction.options.getString('indices');
+                    const confirmDelete = interaction.options.getBoolean('confirm');
+
+                    if (!indices) {
+                        await interaction.reply({
+                            content: '❌ Please provide indices to delete.\n\n**Examples:**\n• Single: `1,3,5`\n• Range: `1-5` (deletes 1,2,3,4,5)\n• Mixed: `1,3,5-8,12`',
+                            ephemeral: true
+                        });
+                        return;
+                    }
+
+                    if (!confirmDelete) {
+                        await interaction.reply({
+                            content: '❌ Bulk deletion requires confirmation. Set `confirm` to `true`.',
+                            ephemeral: true
+                        });
+                        return;
+                    }
+
+                    // Parse indices from string
+                    const indicesToDelete = [];
+                    const parts = indices.split(',');
+
+                    for (const part of parts) {
+                        const trimmed = part.trim();
+                        if (trimmed.includes('-')) {
+                            // Handle range like "5-8"
+                            const [start, end] = trimmed.split('-').map(n => parseInt(n.trim()));
+                            if (!isNaN(start) && !isNaN(end) && start <= end) {
+                                for (let i = start; i <= end; i++) {
+                                    indicesToDelete.push(i);
+                                }
+                            }
+                        } else {
+                            // Handle single number
+                            const num = parseInt(trimmed);
+                            if (!isNaN(num)) {
+                                indicesToDelete.push(num);
+                            }
+                        }
+                    }
+
+                    // Remove duplicates and sort in descending order (delete from end to avoid index shifting)
+                    const uniqueIndices = [...new Set(indicesToDelete)].sort((a, b) => b - a);
+
+                    // Validate all indices
+                    const invalidIndices = uniqueIndices.filter(idx => idx < 0 || idx >= backupData.length);
+                    if (invalidIndices.length > 0) {
+                        await interaction.reply({
+                            content: `❌ Invalid indices found: ${invalidIndices.join(', ')}\n\nValid range: 0-${backupData.length - 1}`,
+                            ephemeral: true
+                        });
+                        return;
+                    }
+
+                    // Show what will be deleted
+                    const submissionsToDelete = uniqueIndices.map(idx => ({
+                        index: idx,
+                        submission: backupData[idx]
+                    }));
+
+                    const deleteList = submissionsToDelete
+                        .map(item => `• Index ${item.index}: ${item.submission.project_name} - ${item.submission.username}`)
+                        .join('\n');
+
+                    // Create final confirmation
+                    const confirmRow = new ActionRowBuilder()
+                        .addComponents(
+                            new ButtonBuilder()
+                                .setCustomId(`confirm_bulk_delete_${uniqueIndices.join(',')}`)
+                                .setLabel('✅ Confirm Bulk Delete')
+                                .setStyle(ButtonStyle.Danger),
+                            new ButtonBuilder()
+                                .setCustomId('cancel_delete')
+                                .setLabel('❌ Cancel')
+                                .setStyle(ButtonStyle.Secondary)
+                        );
+
+                    await interaction.reply({
+                        content: `⚠️ **Confirm Bulk Deletion**\n\n**You are about to delete ${uniqueIndices.length} submission(s):**\n\n${deleteList}\n\n**This action cannot be undone!**`,
+                        components: [confirmRow],
+                        ephemeral: true
+                    });
+                }
+
+
+
             } catch (error) {
                 console.error('Error in amend-submission command:', error);
                 await interaction.reply({
@@ -693,9 +1211,106 @@ client.on('interactionCreate', async interaction => {
             }
         }
 
+
+
         else if (interaction.commandName === 'fast-comm-submission') {
             const modal = createSubmissionModal();
             await interaction.showModal(modal);
+        }
+
+
+
+        else if (interaction.commandName === 'check-my-upload') {
+            try {
+                const backupData = await loadBackupFromGitHub();
+                const userSubmissions = backupData.filter(submission => submission.user_id === userId);
+
+                if (userSubmissions.length === 0) {
+                    await interaction.reply({
+                        content: '❌ **No submissions found**\n\nYou haven\'t submitted any commission claims yet. Use `/fast-comm-submission` to create your first submission.',
+                        ephemeral: true
+                    });
+                    return;
+                }
+
+                // Create summary embed with all user submissions
+                const embed = new EmbedBuilder()
+                    .setTitle('📋 Your Commission Submissions')
+                    .setColor(0x0099FF)
+                    .setDescription(`Found ${userSubmissions.length} submission(s)`)
+                    .setTimestamp();
+
+                // Create buttons for each submission (max 25 buttons per interaction)
+                const buttons = [];
+                const maxButtons = Math.min(userSubmissions.length, 20); // Leave room for other buttons
+
+                for (let i = 0; i < maxButtons; i++) {
+                    const submission = userSubmissions[i];
+                    const submissionIndex = backupData.indexOf(submission);
+                    const totalCommission = submission.agents
+                        ?.filter(agent => agent.name)
+                        ?.reduce((sum, agent) => sum + parseFloat(agent.commission || 0), 0) || 0;
+
+                    // Add to embed
+                    embed.addFields({
+                        name: `${i + 1}. ${submission.project_name}`,
+                        value: `**Unit:** ${submission.unit_no}\n**Total Commission:** RM${totalCommission.toFixed(2)}\n**Submitted:** ${formatGMT8DateString(new Date(submission.submitted_at))}\n**Documents:** ${submission.uploadedFiles?.length || 0} file(s)`,
+                        inline: true
+                    });
+
+                    // Create button for detailed view
+                    buttons.push(
+                        new ButtonBuilder()
+                            .setCustomId(`view_submission_${submissionIndex}`)
+                            .setLabel(`View ${submission.project_name}`)
+                            .setStyle(ButtonStyle.Primary)
+                    );
+                }
+
+                // Split buttons into rows (max 5 per row)
+                const rows = [];
+                for (let i = 0; i < buttons.length; i += 5) {
+                    const rowButtons = buttons.slice(i, i + 5);
+                    rows.push(new ActionRowBuilder().addComponents(rowButtons));
+                }
+
+                // Add refresh button
+                if (rows.length > 0) {
+                    const lastRow = rows[rows.length - 1];
+                    if (lastRow.components.length < 5) {
+                        lastRow.addComponents(
+                            new ButtonBuilder()
+                                .setCustomId('refresh_my_submissions')
+                                .setLabel('🔄 Refresh')
+                                .setStyle(ButtonStyle.Secondary)
+                        );
+                    } else {
+                        rows.push(new ActionRowBuilder().addComponents(
+                            new ButtonBuilder()
+                                .setCustomId('refresh_my_submissions')
+                                .setLabel('🔄 Refresh')
+                                .setStyle(ButtonStyle.Secondary)
+                        ));
+                    }
+                }
+
+                if (userSubmissions.length > maxButtons) {
+                    embed.setFooter({ text: `Showing ${maxButtons} of ${userSubmissions.length} submissions. Use 🔄 Refresh to see all.` });
+                }
+
+                await interaction.reply({
+                    embeds: [embed],
+                    components: rows,
+                    ephemeral: true
+                });
+
+            } catch (error) {
+                console.error('Error checking user submissions:', error);
+                await interaction.reply({
+                    content: '❌ Error retrieving your submission data. Please try again later.',
+                    ephemeral: true
+                });
+            }
         }
         return;
     }
@@ -711,14 +1326,23 @@ client.on('interactionCreate', async interaction => {
             console.log('Raw Nett Price Input:', nettPriceInput);
             console.log('Raw Commission Rate Input:', commissionRateInput);
 
+            // Get existing data to preserve consultant information
+            const existingData = submissions.get(userId);
+
             const data = {
                 project_name: interaction.fields.getTextInputValue('project_name'),
                 unit_no: interaction.fields.getTextInputValue('unit_no'),
                 spa_price: interaction.fields.getTextInputValue('spa_price'),
                 nett_price: nettPriceInput,
                 commission_rate: commissionRateInput,
-                agents: [],
-                submission_date: new Date().toISOString()
+                agents: existingData?.agents || [], // Preserve existing consultant data
+                submission_date: existingData?.submission_date || new Date().toISOString(),
+                // Preserve other existing data if any
+                customer_name: existingData?.customer_name,
+                customer_phone: existingData?.customer_phone,
+                customer_address: existingData?.customer_address,
+                spa_date: existingData?.spa_date,
+                la_date: existingData?.la_date
             };
 
             console.log('Stored data nett_price:', data.nett_price);
@@ -726,18 +1350,101 @@ client.on('interactionCreate', async interaction => {
 
             submissions.set(userId, data);
 
-            // Show continue button instead of modal
-            const continueRow = new ActionRowBuilder()
-                .addComponents(
+            // Check if we have existing consultants or customer data to determine next step
+            const hasConsultants = data.agents && data.agents.some(agent => agent && agent.name);
+            const hasCustomerDetails = data.customer_name && data.customer_phone && data.customer_address && data.spa_date && data.la_date;
+
+            let buttons = [];
+            let message = '';
+
+            if (hasConsultants) {
+                // User has consultant data, show options to continue editing or proceed
+                message = '✅ **Project details updated!**\nYour consultant data has been preserved. Choose your next step:';
+
+                buttons.push(
+                    new ButtonBuilder()
+                        .setCustomId('show_agent_form_1')
+                        .setLabel('Edit Consultant 1')
+                        .setStyle(ButtonStyle.Secondary)
+                );
+
+                if (data.agents[1] && data.agents[1].name) {
+                    buttons.push(
+                        new ButtonBuilder()
+                            .setCustomId('show_agent_form_2')
+                            .setLabel('Edit Consultant 2')
+                            .setStyle(ButtonStyle.Secondary)
+                    );
+                }
+
+                if (data.agents[2] && data.agents[2].name) {
+                    buttons.push(
+                        new ButtonBuilder()
+                            .setCustomId('show_agent_form_3')
+                            .setLabel('Edit Consultant 3')
+                            .setStyle(ButtonStyle.Secondary)
+                    );
+                }
+
+                if (data.agents[3] && data.agents[3].name) {
+                    buttons.push(
+                        new ButtonBuilder()
+                            .setCustomId('show_agent_form_4')
+                            .setLabel('Edit Consultant 4')
+                            .setStyle(ButtonStyle.Secondary)
+                    );
+                }
+
+                // Add new consultant option if less than 4
+                if (data.agents.length < 4) {
+                    const nextSlot = data.agents.findIndex(agent => !agent || !agent.name);
+                    const nextConsultantNum = nextSlot === -1 ? data.agents.length + 1 : nextSlot + 1;
+                    if (nextConsultantNum <= 4) {
+                        buttons.push(
+                            new ButtonBuilder()
+                                .setCustomId(`show_agent_form_${nextConsultantNum}`)
+                                .setLabel(`Add Consultant ${nextConsultantNum}`)
+                                .setStyle(ButtonStyle.Primary)
+                        );
+                    }
+                }
+
+                if (hasCustomerDetails) {
+                    buttons.push(
+                        new ButtonBuilder()
+                            .setCustomId('proceed_to_confirmation')
+                            .setLabel('✅ Proceed to Confirmation')
+                            .setStyle(ButtonStyle.Success)
+                    );
+                } else {
+                    buttons.push(
+                        new ButtonBuilder()
+                            .setCustomId('show_customer_form')
+                            .setLabel('Continue: Customer Details')
+                            .setStyle(ButtonStyle.Primary)
+                    );
+                }
+            } else {
+                // No consultant data, show normal flow
+                message = '✅ **Project details saved!**\nClick the button below to continue with consultant details.';
+                buttons.push(
                     new ButtonBuilder()
                         .setCustomId('show_agent_form_1')
                         .setLabel('Continue: Add Consultant Details')
                         .setStyle(ButtonStyle.Primary)
                 );
+            }
+
+            // Split buttons into rows (max 5 buttons per row)
+            const rows = [];
+            for (let i = 0; i < buttons.length; i += 5) {
+                const rowButtons = buttons.slice(i, i + 5);
+                rows.push(new ActionRowBuilder().addComponents(rowButtons));
+            }
 
             await interaction.reply({
-                content: '✅ **Project details saved!**\nClick the button below to continue with consultant details.',
-                components: [continueRow],
+                content: message,
+                components: rows,
                 ephemeral: true
             });
         }
@@ -794,12 +1501,25 @@ client.on('interactionCreate', async interaction => {
                     new ButtonBuilder()
                         .setCustomId('skip_to_customer')  
                         .setLabel('Skip to Customer Details')
-                        .setStyle(ButtonStyle.Secondary),
-                    new ButtonBuilder()
-                        .setCustomId(`show_agent_form_back_${step}`)
-                        .setLabel(`Previous Consultant`)
                         .setStyle(ButtonStyle.Secondary)
                 ];
+
+                // Add Previous button (different logic for step 1)
+                if (step === 1) {
+                    buttons.push(
+                        new ButtonBuilder()
+                            .setCustomId('show_agent_form_back_1')
+                            .setLabel('← Back to Project Details')
+                            .setStyle(ButtonStyle.Secondary)
+                    );
+                } else {
+                    buttons.push(
+                        new ButtonBuilder()
+                            .setCustomId(`show_agent_form_back_${step}`)
+                            .setLabel(`← Previous Consultant`)
+                            .setStyle(ButtonStyle.Secondary)
+                    );
+                }
 
                 // Add confirmation button if customer details exist
                 if (hasCustomerDetails) {
@@ -813,10 +1533,27 @@ client.on('interactionCreate', async interaction => {
 
                 const continueRow = new ActionRowBuilder().addComponents(buttons);
 
+                try {
                 await interaction.update({
                     content: `✅ **Consultant ${step} details saved!**\nYou can add more consultants${hasCustomerDetails ? ', proceed to confirmation,' : ''} or proceed to customer details.`,
                     components: [continueRow]
                 });
+            } catch (error) {
+                console.error('Discord API error during update:', error);
+                if (error.status === 503) {
+                    console.log('Discord API temporarily unavailable, retrying...');
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    try {
+                        await interaction.editReply({
+                            content: `✅ **Consultant ${step} details saved!**\nYou can add more consultants${hasCustomerDetails ? ', proceed to confirmation,' : ''} or proceed to customer details.`,
+                            components: [continueRow]
+                        });
+                    } catch (retryError) {
+                        console.error('Retry failed:', retryError);
+                    }
+                }
+            }
+
             } else {
                 // Show continue button for customer form or confirmation
                 const buttons = [];
@@ -840,17 +1577,35 @@ client.on('interactionCreate', async interaction => {
                  buttons.push(
                         new ButtonBuilder()
                             .setCustomId(`show_agent_form_back_${step}`)
-                            .setLabel(`Previous Consultant`)
+                            .setLabel(`← Previous Consultant`)
                             .setStyle(ButtonStyle.Secondary)
                     );
 
                 const continueRow = new ActionRowBuilder().addComponents(buttons);
 
+                try {
                 await interaction.update({
                     content: `✅ **All consultant details saved!**\nClick below to ${hasCustomerDetails ? 'proceed to confirmation' : 'add customer details'}.`,
                     components: [continueRow]
                 });
+            } catch (error) {
+                console.error('Discord API error during update:', error);
+                if (error.status === 503) {
+                    console.log('Discord API temporarily unavailable, retrying...');
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    try {
+                        await interaction.editReply({
+                            content: `✅ **All consultant details saved!**\nClick below to ${hasCustomerDetails ? 'proceed to confirmation' : 'add customer details'}.`,
+                            components: [continueRow]
+                        });
+                    } catch (retryError) {
+                        console.error('Retry failed:', retryError);
+                    }
+                }
             }
+
+            }
+
         }
 
         else if (interaction.customId === 'customer_form') {
@@ -893,6 +1648,7 @@ client.on('interactionCreate', async interaction => {
                         .setCustomId('edit_agent_percentages')
                         .setLabel('✏️ Edit Consultant Percentages')
                         .setStyle(ButtonStyle.Primary),
+
                     new ButtonBuilder()
                         .setCustomId('cancel_submission')
                         .setLabel('❌ Cancel')
@@ -955,7 +1711,7 @@ client.on('interactionCreate', async interaction => {
             };
 
             await interaction.reply({
-                content: `📎 **Ready to upload ${documentNames[documentType]}!**\n\n**Now attach your ${documentNames[documentType]} to your next message.**\n\nSupported formats: PDF, DOC, DOCX, JPG, PNG\n\nI\'ll process your files automatically and update the checklist!`,
+                content: `📎 **Ready to upload ${documentNames[documentType]}!**\n\n**Now attach your ${documentNames[documentType]} to your next message.**\n\nSupported formats: PDF, DOC, DOCX, JPG, PNG\n\nI'll process your files automatically and update the checklist!`,
                 ephemeral: true
             });
 
@@ -996,6 +1752,37 @@ client.on('interactionCreate', async interaction => {
             await interaction.showModal(agentModal);
         }
 
+        else if (interaction.customId === 'show_agent_form_back_1') {
+            // Handle going back from consultant 1 - show project form instead
+            const data = submissions.get(userId);
+            if (!data) {
+                const restartRow = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('restart_submission')
+                            .setLabel('🔄 Start New Submission')
+                            .setStyle(ButtonStyle.Primary)
+                    );
+
+                await interaction.update({
+                    content: '❌ **Session expired or missing data**\n\nYour session has timed out. Click below to start a new submission:',
+                    components: [restartRow],
+                    embeds: []
+                });
+                return;
+            }
+
+            const modal = createSubmissionModal();
+            // Pre-fill the modal with existing data
+            modal.components[0].components[0].setValue(data.project_name || '');
+            modal.components[1].components[0].setValue(data.unit_no || '');
+            modal.components[2].components[0].setValue(data.spa_price || '');
+            modal.components[3].components[0].setValue(data.nett_price || '');
+            modal.components[4].components[0].setValue(data.commission_rate ? data.commission_rate.toString() : '');
+
+            await interaction.showModal(modal);
+        }
+
         else if (interaction.customId === 'show_agent_form_2') {
             const data = submissions.get(userId);
             const existingAgent = data && data.agents && data.agents[1] ? data.agents[1] : {};
@@ -1024,10 +1811,32 @@ client.on('interactionCreate', async interaction => {
         }
 
         else if (interaction.customId === 'confirm_submission') {
+            const data = submissions.get(userId);
+
+            // Check if already confirmed to prevent duplicate processing
+            if (data && data.dataConfirmed && data.sessionToken) {
+                await interaction.reply({
+                    content: '✅ **Submission already confirmed!**\n\nYour submission is ready for document upload. Please use the form link to upload your documents.',
+                    ephemeral: true
+                });
+                return;
+            }
+
+            // Prevent double-clicks
+            const confirmKey = `confirm_${userId}`;
+            if (processingConfirmations.has(confirmKey)) {
+                await interaction.reply({
+                    content: '⏳ Submission already being processed. Please wait...',
+                    ephemeral: true
+                });
+                return;
+            }
+
+            // Mark as processing
+            processingConfirmations.set(confirmKey, true);
+
             // Immediately respond to prevent timeout
             await interaction.deferUpdate();
-
-            const data = submissions.get(userId);
 
             if (!data || !data.project_name) {
                 const restartRow = new ActionRowBuilder()
@@ -1038,56 +1847,73 @@ client.on('interactionCreate', async interaction => {
                             .setStyle(ButtonStyle.Primary)
                     );
 
-                await interaction.update({
+                await interaction.editReply({
                     content: '❌ **Session expired or missing data**\n\nYour session has timed out. Click below to start a new submission:',
                     components: [restartRow],
                     embeds: []
                 });
+                processingConfirmations.delete(confirmKey);
                 return;
             }
 
-            // Save to GitHub backup FIRST to preserve user data
-            const backupData = await loadBackupFromGitHub();
-            const submissionData = {
-                ...data,
-                user_id: userId,
-                username: interaction.user.username,
-                submitted_at: new Date().toISOString()
-            };
-            backupData.push(submissionData);
-            await saveBackupToGitHub(backupData);
 
-            // Mark data as confirmed and preserved
+
+            // Skip authentication check - proceed directly to document upload
+            // OAuth will be handled silently in the background during file processing
+
+            // Generate unique session token for this user
+            const sessionToken = `token_${userId}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+            // Mark data as confirmed but DON'T save to GitHub backup yet
+            // Only save after successful document upload
             data.dataConfirmed = true;
-            data.backupSaved = true;
+            data.status = 'awaiting_form_completion';
+            data.sessionToken = sessionToken;
+            data.userId = userId; // Store user ID in data
+            data.username = interaction.user.username; // Store username for later use
             submissions.set(userId, data);
 
+            // Map token to user ID for webhook matching
+            tokenToUserId.set(sessionToken, userId);
+
             try {
-                // Create Google Form for document uploads
-                const formData = await createDocumentUploadForm(data);
+                // Check if Jotform is properly configured
+                if (!JOTFORM_API_KEY || !JOTFORM_TEMPLATE_ID) {
+                    throw new Error('Jotform not configured');
+                }
+
+                // Create Jotform for document uploads with unique token
+                // Use prefilled form URL with unique session token embedded in project info for perfect matching
+        // Use prefilled form URL with session token in the session_id field
+        // Use prefilled form URL with user_id and price_token fields
+        const formUrl = `https://form.jotform.com/${JOTFORM_TEMPLATE_ID}?user_id=${encodeURIComponent(data.userId)}&price_token=${encodeURIComponent(sessionToken)}`;
+
+        console.log('Generated Jotform URL with session token:', sessionToken);
+        console.log('Generated Jotform URL for:', data.project_name);
+                const formData = await createJotformUpload(data, sessionToken);
 
                 // Store form info
-                data.googleForm = formData;
+                data.jotform = formData;
                 data.status = 'awaiting_form_completion';
                 submissions.set(userId, data);
 
                 const embed = new EmbedBuilder()
-                    .setTitle('📋 Document Upload - Google Form')
-                    .setColor(0x4285F4)
-                    .setDescription('Your personalized Google Form has been created!')
+                    .setTitle('📋 Document Upload - Jotform')
+                    .setColor(0xFF6600)
+                    .setDescription('Your document upload form is ready!')
                     .addFields(
-                        { name: '📝 What to do next:', value: '1. Click the "Upload Documents" button below\n2. Fill out the Google Form with your documents\n3. Submit the form\n4. Return here and click "Check Upload Status"', inline: false },
-                        { name: '📋 Required Documents:', value: '• Booking Form\n• SPA Document\n• LA Document', inline: false }
+                        { name: '📝 What to do next:', value: '1. Click the "Upload Documents" button below\n2. Fill out the Jotform with your documents\n3. Submit the form\n4. Return here and click "Check Upload Status"', inline: false },
+                        { name: '📋 Required Documents:', value: '• Booking Form\n• SPA Document\n• LA Document', inline: false },
+                        { name: '📋 Project Info', value: `${data.project_name} - ${data.unit_no}`, inline: false }
                     )
-                    .setFooter({ text: 'The form will automatically save your documents to Google Drive' });
+                    .setFooter({ text: 'The form will automatically save your documents' });
 
                 const actionRow = new ActionRowBuilder()
                     .addComponents(
                         new ButtonBuilder()
-                            .setCustomId('open_google_form')
                             .setLabel('📝 Upload Documents')
                             .setStyle(ButtonStyle.Link)
-                            .setURL(formData.responseUrl),
+                            .setURL(formData.formUrl),
                         new ButtonBuilder()
                             .setCustomId('check_upload_status')
                             .setLabel('🔄 Check Upload Status')
@@ -1098,19 +1924,27 @@ client.on('interactionCreate', async interaction => {
                             .setStyle(ButtonStyle.Danger)
                     );
 
-                await interaction.update({
-                    content: '✅ **Submission Confirmed!**\n\n📋 **Your commission data has been saved.**\n🎯 **Google Form created for document uploads!**',
+                // Send as follow-up to make it persistent
+                await interaction.editReply({
+                    content: '✅ **Submission Processing...**',
+                    embeds: [],
+                    components: []
+                });
+
+                await interaction.followUp({
+                    content: '✅ **Submission Confirmed!**\n\n📋 **Your commission data has been saved.**\n🎯 **Document upload form ready!**',
                     embeds: [embed],
-                    components: [actionRow]
+                    components: [actionRow],
+                    ephemeral: true
                 });
 
             } catch (error) {
-            console.error('Error creating Google Form:', error);
+            console.error('Error creating Jotform:', error);
             console.error('Error details:', error.response?.data || error.message);
 
             // Check for specific error types
             if (error.response?.status === 403) {
-                console.error('Permission denied - check service account permissions');
+                console.error('Permission denied - check Jotform API key');
             } else if (error.response?.status === 429) {
                 console.error('Rate limit exceeded - implementing retry logic');
 
@@ -1120,29 +1954,28 @@ client.on('interactionCreate', async interaction => {
                         console.log(`Retry attempt ${attempt}/3 after rate limit...`);
                         await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 1000));
 
-                        const retryFormData = await createDocumentUploadForm(data);
-                        data.googleForm = retryFormData;
+                        const retryFormData = await createJotformUpload(data);
+                        data.jotform = retryFormData;
                         data.status = 'awaiting_form_completion';
                         submissions.set(userId, data);
 
                         // Success on retry
                         const embed = new EmbedBuilder()
-                            .setTitle('📋 Document Upload - Google Form (Retry Success)')
-                            .setColor(0x4285F4)
-                            .setDescription('Your personalized Google Form has been created after retry!')
+                            .setTitle('📋 Document Upload - Jotform (Retry Success)')
+                            .setColor(0xFF6600)
+                            .setDescription('Your personalized Jotform has been created after retry!')
                             .addFields(
-                                { name: '📝 What to do next:', value: '1. Click the "Upload Documents" button below\n2. Fill out the Google Form with your documents\n3. Submit the form\n4. Return here and click "Check Upload Status"', inline: false },
+                                { name: '📝 What to do next:', value: '1. Click the "Upload Documents" button below\n2. Fill out the Jotform with your documents\n3. Submit the form\n4. Return here and click "Check Upload Status"', inline: false },
                                 { name: '📋 Required Documents:', value: '• Booking Form\n• SPA Document\n• LA Document', inline: false }
                             )
-                            .setFooter({ text: 'The form will automatically save your documents to Google Drive' });
+                            .setFooter({ text: 'The form will automatically save your documents' });
 
                         const actionRow = new ActionRowBuilder()
                             .addComponents(
                                 new ButtonBuilder()
-                                    .setCustomId('open_google_form')
                                     .setLabel('📝 Upload Documents')
                                     .setStyle(ButtonStyle.Link)
-                                    .setURL(retryFormData.responseUrl),
+                                    .setURL(retryFormData.formUrl),
                                 new ButtonBuilder()
                                     .setCustomId('check_upload_status')
                                     .setLabel('🔄 Check Upload Status')
@@ -1154,7 +1987,7 @@ client.on('interactionCreate', async interaction => {
                             );
 
                         await interaction.editReply({
-                            content: '✅ **Form Creation Successful After Retry!**\n\n📋 **Your commission data has been saved.**\n🎯 **Google Form created for document uploads!**',
+                            content: '✅ **Form Creation Successful After Retry!**\n\n📋 **Your commission data has been saved.**\n🎯 **Jotform created for document uploads!**',
                             embeds: [embed],
                             components: [actionRow]
                         });
@@ -1166,14 +1999,11 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
-            // Fallback to ready-made Google Form
-            const fallbackFormUrl = "https://docs.google.com/forms/d/e/1FAIpQLSc_EXAMPLE_FORM_ID/viewform";
-
                 // Check if interaction is still valid (not expired)
                 try {
                     // Since data is already saved, show user-friendly error with retry
                     const errorEmbed = new EmbedBuilder()
-                        .setTitle('⚠️ Google Form Creation Error')
+                        .setTitle('⚠️ Jotform Creation Error')
                         .setColor(0xFF6B6B)
                         .setDescription('There was a temporary issue creating your document upload form.')
                         .addFields(
@@ -1186,7 +2016,7 @@ client.on('interactionCreate', async interaction => {
                     const retryRow = new ActionRowBuilder()
                         .addComponents(
                             new ButtonBuilder()
-                                .setCustomId('retry_google_form')
+                                .setCustomId('retry_jotform')
                                 .setLabel('🔄 Retry Form Creation')
                                 .setStyle(ButtonStyle.Primary),
                             new ButtonBuilder()
@@ -1199,27 +2029,34 @@ client.on('interactionCreate', async interaction => {
                                 .setStyle(ButtonStyle.Danger)
                         );
 
-                    await interaction.update({
+                    await interaction.editReply({
                         content: '💾 **Your Data Has Been Safely Preserved!**\n\n✅ **Submission confirmed and backed up**\n⚠️ **Form creation needs retry**',
                         embeds: [errorEmbed],
-                        components: [retryRow]
+                        components: [retryRow],
+                        ephemeral: true
                     });
+                    processingConfirmations.delete(confirmKey);
                 } catch (interactionError) {
                     console.error('Interaction expired, sending follow-up message:', interactionError);
 
                     // Interaction expired, send a follow-up message
                     try {
                         await interaction.followUp({
-                            content: '💾 **Your Data Has Been Safely Preserved!**\n\n✅ **Submission confirmed and backed up to GitHub**\n⚠️ **Google Form creation failed temporarily**\n\n🔄 **To continue:** Use `/fast-comm-submission` command again. Your data is preserved and you won\'t need to re-enter it.',
+                            content: '💾 **Your Data Has Been Safely Preserved!**\n\n✅ **Submission confirmed and backed up to GitHub**\n⚠️ **Jotform creation failed temporarily**\n\n🔄 **To continue:** Use `/fast-comm-submission` command again. Your data is preserved and you won\'t need to re-enter it.',
                             ephemeral: true
                         });
                     } catch (followUpError) {
                         console.error('Both interaction update and followUp failed, logging data for user:', followUpError);
                         console.log(`User ${userId} (${interaction.user.username}) data preserved but UI failed. Backup saved to GitHub.`);
                     }
+                } finally {
+                    // Always clean up processing state
+                    processingConfirmations.delete(confirmKey);
                 }
             }
         }
+
+
 
         else if (interaction.customId === 'edit_details') {
             // Show edit options menu
@@ -1262,7 +2099,7 @@ client.on('interactionCreate', async interaction => {
         else if (interaction.customId === 'edit_agent_details') {
             // Show agent editing options
             const agentRow = new ActionRowBuilder()
-                .addComponents(
+                                .addComponents(
                     new ButtonBuilder()
                         .setCustomId('show_agent_form_1')
                         .setLabel('Edit Consultant 1')
@@ -1348,17 +2185,9 @@ client.on('interactionCreate', async interaction => {
             const data = submissions.get(userId);
 
             if (!data) {
-                const restartRow = new ActionRowBuilder()
-                    .addComponents(
-                        new ButtonBuilder()
-                            .setCustomId('restart_submission')
-                            .setLabel('🔄 Start New Submission')
-                            .setStyle(ButtonStyle.Primary)
-                    );
-
                 await interaction.update({
                     content: '❌ **Session expired or missing data**\n\nYour session has timed out. Click below to start a new submission:',
-                    components: [restartRow],
+                    components: [],
                     embeds: []
                 });
                 return;
@@ -1408,8 +2237,7 @@ client.on('interactionCreate', async interaction => {
 
                 await interaction.update({
                     content: '❌ **Session expired or missing data**\n\nYour session has timed out. Click below to start a new submission:',
-                    components: [restartRow],
-                    embeds: []
+                    components: [restartRow]
                 });
                 return;
             }
@@ -1472,7 +2300,7 @@ client.on('interactionCreate', async interaction => {
             const data = submissions.get(userId);
 
             await interaction.update({
-                content: '🎉 **Submission Complete!**\n\nThank you for your commission submission. Your documents have been uploaded and your data has been saved.\n\n✅ **Status:** Complete\n📁 **Documents:** Uploaded to Google Drive',
+                content: '🎉 **Submission Complete!**\n\nThank you for your commission submission. Your documents have been uploaded and your data has been saved.\n\n✅ **Status:** Complete\n📁 **Documents:** Successfully uploaded',
                 components: []
             });
 
@@ -1507,8 +2335,7 @@ client.on('interactionCreate', async interaction => {
                 const index = parseInt(interaction.customId.split('_')[2]);
                 const backupData = await loadBackupFromGitHub();
 
-                if (index < 0 || index >= backupData.length) {
-                    await interaction.update({
+                if (index < 0 || index >= backupData.length) {                    await interaction.update({
                         content: '❌ Invalid submission index.',
                         components: []
                     });
@@ -1533,12 +2360,62 @@ client.on('interactionCreate', async interaction => {
             }
         }
 
+        else if (interaction.customId.startsWith('confirm_bulk_delete_')) {
+
+            try {
+                const indicesString = interaction.customId.replace('confirm_bulk_delete_', '');
+                const indices = indicesString.split(',').map(str => parseInt(str.trim())).sort((a, b) => b - a);
+                const backupData = await loadBackupFromGitHub();
+
+                // Validate indices again
+                const invalidIndices = indices.filter(idx => idx < 0 || idx >= backupData.length);
+                if (invalidIndices.length > 0) {
+                    await interaction.update({
+                        content: `❌ Some indices are now invalid: ${invalidIndices.join(', ')}\n\nPlease try again with valid indices.`,
+                        components: []
+                    });
+                    return;
+                }
+
+                // Delete submissions (from highest index to lowest to avoid index shifting)
+                const deletedSubmissions = [];
+                for (const index of indices) {
+                    deletedSubmissions.push({
+                        index: index,
+                        project: backupData[index].project_name,
+                        user: backupData[index].username
+                    });
+                    backupData.splice(index, 1);
+                }
+
+                await saveBackupToGitHub(backupData);
+
+                const deletedList = deletedSubmissions
+                    .map(item => `• Index ${item.index}: ${item.project} - ${item.user}`)
+                    .join('\n');
+
+                await interaction.update({
+                    content: `✅ **Bulk Deletion Successful**\n\n**Deleted ${deletedSubmissions.length} submission(s):**\n\n${deletedList}\n\nBackup updated in GitHub.`,
+                    components: []
+                });
+
+            } catch (error) {
+                console.error('Error bulk deleting submissions:', error);
+                await interaction.update({
+                    content: '❌ Error bulk deleting submissions from GitHub backup.',
+                    components: []
+                });
+            }
+        }
+
         else if (interaction.customId === 'cancel_delete') {
             await interaction.update({
                 content: '❌ Deletion cancelled.',
                 components: []
             });
         }
+
+
 
         else if (interaction.customId === 'upload_booking_form') {
             await interaction.reply({
@@ -1576,7 +2453,7 @@ client.on('interactionCreate', async interaction => {
         else if (interaction.customId === 'check_upload_status') {
             const data = submissions.get(userId);
 
-            if (!data || !data.googleForm) {
+            if (!data || !data.jotform) {
                 await interaction.reply({
                     content: '❌ No form data found. Please restart the submission process.',
                     ephemeral: true
@@ -1584,30 +2461,293 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
-            try {
-                const hasResponses = await checkFormResponses(data.googleForm.formId);
+            // Prevent multiple simultaneous status checks
+            const statusCheckKey = `status_check_${userId}`;
+            if (processingConfirmations.has(statusCheckKey)) {
+                await interaction.reply({
+                    content: '⏳ Status check already in progress. Please wait...',
+                    ephemeral: true
+                });
+                return;
+            }
 
-                if (hasResponses) {
-                    await interaction.update({
-                        content: '🎉 **Commission Submission Complete!**\n\nThank you for your submission! Your documents have been uploaded via Google Form and your data has been saved.\n\n✅ **Status:** Complete\n📁 **Documents:** Uploaded to Google Drive via Google Form\n📋 **Form:** Your responses have been recorded',
+            // Mark status check as in progress
+            processingConfirmations.set(statusCheckKey, true);
+
+            try {
+                await interaction.deferUpdate();
+
+                // Check if already completed via webhook for THIS specific user AND has actual files
+                if (data.status === 'completed' && data.jotformSubmissionId && data.uploadedFiles && data.uploadedFiles.length > 0) {
+                    await interaction.followUp({
+                        content: `🎉 **Commission Submission Complete!**\n\nCongratulations! Your claim submission is under review. Please be patient, we have notified our admin to proceed with your application.\n\n✅ **Status:** Complete\n📁 **Documents:** Successfully uploaded\n📋 **Notification:** Sent to admin channel\n\n📄 **Files Uploaded:** ${data.uploadedFiles.length} document(s)`,
+                        ephemeral: true
+                    });
+                    submissions.delete(userId);
+                    return;
+                }
+
+                // Check if user already has files uploaded (prevent duplicate processing)
+                if (data.uploadedFiles && data.uploadedFiles.length > 0) {
+                    await interaction.editReply({
+                        content: `🎉 **Commission Submission Complete!**\n\nCongratulations! Your claim submission is under review. Please be patient, we have notified our admin to proceed with your application.\n\n✅ **Status:** Complete\n📁 **Documents:** Successfully uploaded\n📋 **Notification:** Sent to admin channel\n\n📄 **Files Uploaded:** ${data.uploadedFiles.length} document(s)`,
                         embeds: [],
                         components: []
                     });
+                    data.status = 'completed';
+                    submissions.set(userId, data);
+                    processingConfirmations.delete(statusCheckKey);
+                    return;
+                }
 
-                    // Clean up
-                    submissions.delete(userId);
-                } else {
-                    await interaction.reply({
-                        content: '⏳ **No form submission detected yet**\n\nPlease complete the Google Form first, then check status again.\n\n📝 If you haven\'t submitted the form yet, click the "Upload Documents" button above.',
-                        ephemeral: true
+                // Check if this specific submission was already processed via webhook
+                if (data.jotformSubmissionId && processedSubmissions.has(data.jotformSubmissionId)) {
+                    console.log('Submission already processed globally:', data.jotformSubmissionId);
+                    await interaction.editReply({
+                        content: `🎉 **Commission Submission Complete!**\n\nCongratulations! Your claim submission is already processed.\n\n✅ **Status:** Complete\n📁 **Documents:** Already uploaded\n📋 **Notification:** Already sent`,
+                        embeds: [],
+                        components: []
                     });
+                    data.status = 'completed';
+                    submissions.set(userId, data);
+                    processingConfirmations.delete(statusCheckKey);
+                    return;
+                }
+
+                // Check for submissions with matching session token (perfect matching)
+                const hasNewSubmissions = await checkForTokenBasedJotformSubmissions(data.jotform.formId, data);
+
+                if (hasNewSubmissions) {
+                    // Show progress bar first
+                    const progressEmbed = new EmbedBuilder()
+                        .setTitle('⏳ Processing Your Documents')
+                        .setColor(0xFF6600)
+                        .setDescription('Your files are being transferred to server...')
+                        .addFields(
+                            { name: '📁 Status', value: '🔄 Downloading from Jotform...', inline: false },
+                            { name: '🎯 Project', value: `${data.project_name} - ${data.unit_no}`, inline: false },
+                            { name: '📄 Submission ID', value: hasNewSubmissions.submissionId, inline: false }
+                        )
+                        .setFooter({ text: 'Please wait while we process your documents' });
+
+                    await interaction.editReply({
+                        content: '📤 **File Upload in Progress...**',
+                        embeds: [progressEmbed],
+                        components: []
+                    });
+
+                    // Check if this submission was already processed by this user
+                    if (data.jotformSubmissionId === hasNewSubmissions.submissionId && data.uploadedFiles && data.uploadedFiles.length > 0) {
+                        await interaction.editReply({
+                            content: `🎉 **Commission Submission Complete!**\n\nCongratulations! Your claim submission is under review. Please be patient, we have notified our admin to proceed with your application.\n\n✅ **Status:** Complete\n📁 **Documents:** Successfully uploaded\n📋 **Notification:** Sent to admin channel\n\n📄 **Files Uploaded:** ${data.uploadedFiles.length} document(s)`,
+                            embeds: [],
+                            components: []
+                        });
+                        processingConfirmations.delete(statusCheckKey);
+                        return;
+                    }
+
+                    // Check if this submission ID was already processed globally (prevent duplicate processing)
+                    if (processedSubmissions.has(hasNewSubmissions.submissionId)) {
+                        console.log('Submission already processed globally:', hasNewSubmissions.submissionId);
+                        await interaction.editReply({
+                            content: `🎉 **Commission Submission Complete!**\n\nCongratulations! Your claim submission is already processed.\n\n✅ **Status:** Complete\n📁 **Documents:** Already uploaded\n📋 **Notification:** Already sent`,
+                            embeds: [],
+                            components: []
+                        });
+                        processingConfirmations.delete(statusCheckKey);
+                        return;
+                    }
+
+                    // Process the completion with REAL submission ID and update progress
+                    try {
+                        // Update progress: Starting transfer
+                        progressEmbed.setFields(
+                            { name: '📁 Status', value: '📤 Uploading to server...', inline: false },
+                            { name: '🎯 Project', value: `${data.project_name} - ${data.unit_no}`, inline: false },
+                            { name: '📄 Submission ID', value: hasNewSubmissions.submissionId, inline: false }
+                        );
+
+                        await interaction.editReply({
+                            content: '📤 **File Upload in Progress...**',
+                            embeds: [progressEmbed],
+                            components: []
+                        });
+
+                        const uploadedFiles = await transferJotformFilesToGoogleDrive(hasNewSubmissions.submissionId, data);
+
+                        // Only proceed if files were actually uploaded
+                        if (uploadedFiles && uploadedFiles.length > 0) {
+                            // Update progress: Saving to backup
+                            progressEmbed.setFields(
+                                { name: '📁 Status', value: '💾 Saving to backup...', inline: false },
+                                { name: '🎯 Project', value: `${data.project_name} - ${data.unit_no}`, inline: false },
+                                { name: '📄 Files Transferred', value: `${uploadedFiles.length} document(s)`, inline: false }
+                            );
+
+                            await interaction.editReply({
+                                content: '💾 **Finalizing Upload...**',
+                                embeds: [progressEmbed],
+                                components: []
+                            });
+
+                            data.uploadedFiles = uploadedFiles;
+                            data.jotformSubmissionId = hasNewSubmissions.submissionId;
+
+                            // NOW save to GitHub backup (only after successful file upload)
+                            const backupData = await loadBackupFromGitHub();
+                            const submissionData = {
+                                ...data,
+                                user_id: userId,
+                                username: data.username || 'Unknown User',
+                                submitted_at: getGMT8Date().toISOString(),
+                                uploadedFiles: uploadedFiles
+                            };
+                            backupData.push(submissionData);
+                            await saveBackupToGitHub(backupData);
+
+                            // Update progress: Sending notifications
+                            progressEmbed.setFields(
+                                { name: '📁 Status', value: '📨 Sending notifications...', inline: false },
+                                { name: '🎯 Project', value: `${data.project_name} - ${data.unit_no}`, inline: false },
+                                { name: '📄 Files Transferred', value: `${uploadedFiles.length} document(s)`, inline: false }
+                            );
+
+                            await interaction.editReply({
+                                content: '📨 **Sending Notifications...**',
+                                embeds: [progressEmbed],
+                                components: []
+                            });
+
+                            // Send notification to channel
+                            await sendSubmissionNotification(data, hasNewSubmissions.submissionId);
+                            data.status = 'completed';
+                            submissions.set(userId, data);
+
+                            // Final completion message
+                            await interaction.editReply({
+                                content: `🎉 **Commission Submission Complete!**\n\nCongratulations! Your claim submission is under review. Please be patient, we have notified our admin to proceed with your application.\n\n✅ **Status:** Complete\n📁 **Documents:** Successfully uploaded\n📋 **Notification:** Sent to admin channel\n\n📄 **Files Uploaded:** ${uploadedFiles.length} document(s)`,
+                                embeds: [],
+                                components: []
+                            });
+
+                            // Clean up
+                            submissions.delete(userId);
+                            processingConfirmations.delete(statusCheckKey);
+                            return;
+                        } else {
+                            // Files failed to upload
+                            await interaction.editReply({
+                                content: '❌ **File Upload Failed**\n\nDocuments were submitted to Jotform but failed to transfer to server. Please try again or contact support.',
+                                embeds: [],
+                                components: []
+                            });
+                            processingConfirmations.delete(statusCheckKey);
+                            return;
+                        }
+                    } catch (uploadError) {
+                        console.error('Error during upload processing:', uploadError);
+
+                        const errorEmbed = new EmbedBuilder()
+                            .setTitle('❌ Upload Processing Failed')
+                            .setColor(0xFF0000)
+                            .setDescription('There was an error processing your documents.')
+                            .addFields(
+                                { name: '🔍 Error Details', value: uploadError.message || 'Unknown error occurred', inline: false },
+                                { name: '🔄 What to do next', value: 'Please try checking status again or contact support', inline: false }
+                            );
+
+                        const retryRow = new ActionRowBuilder()
+                            .addComponents(
+                                new ButtonBuilder()
+                                    .setCustomId('check_upload_status')
+                                    .setLabel('🔄 Try Again')
+                                    .setStyle(ButtonStyle.Primary),
+                                new ButtonBuilder()
+                                    .setCustomId('back_to_form_view')
+                                    .setLabel('← Back to Form')
+                                    .setStyle(ButtonStyle.Secondary)
+                            );
+
+                        await interaction.editReply({
+                            content: '❌ **Upload Processing Error**',
+                            embeds: [errorEmbed],
+                            components: [retryRow]
+                        });
+                        processingConfirmations.delete(statusCheckKey);
+                        return;
+                    }
+                } else {
+                    const backRow = new ActionRowBuilder()
+                        .addComponents(
+                            new ButtonBuilder()
+                                .setCustomId('check_upload_status')
+                                .setLabel('🔄 Check Again (Auto-refresh in 30s)')
+                                .setStyle(ButtonStyle.Primary),
+                            new ButtonBuilder()
+                                .setLabel('📝 Upload Documents')
+                                .setStyle(ButtonStyle.Link)
+                                .setURL(data.jotform.formUrl),
+                            new ButtonBuilder()
+                                .setCustomId('back_to_form_view')
+                                .setLabel('← Back to Form Info')
+                                .setStyle(ButtonStyle.Secondary)
+                        );
+
+                    await interaction.editReply({
+                        content: '⏳ **No form submission detected yet**\n\nPlease complete the Jotform first, then check status again.\n\n📝 If you haven\'t submitted the form yet, click the "Upload Documents" button below.\n\n🔔 **Note:** The system will auto-check every 30 seconds, or you can manually check again.',
+                        embeds: [],
+                        components: [backRow]
+                    });
+
+                                        // Auto-refresh after 30 seconds
+                    setTimeout(async () => {
+                        try {
+                            const laterData = submissions.get(userId);
+                            if (laterData && laterData.status === 'awaiting_form_completion') {
+                                const hasSubmissions = await checkForTokenBasedJotformSubmissions(laterData.jotform.formId, laterData);
+                                if (hasSubmissions) {
+                                    // Process completion automatically
+                                    const uploadedFiles = await transferJotformFilesToGoogleDrive(hasSubmissions.submissionId, laterData);
+
+                                    if (uploadedFiles && uploadedFiles.length > 0) {
+                                        laterData.uploadedFiles = uploadedFiles;
+                                        laterData.jotformSubmissionId = hasSubmissions.submissionId;
+
+                                        // Save to GitHub backup
+                                        const backupData = await loadBackupFromGitHub();
+                                        const submissionData = {
+                                            ...laterData,
+                                            user_id: userId,
+                                            username: laterData.username || 'Unknown User',
+                                            submitted_at: getGMT8Date().toISOString(),
+                                            uploadedFiles: uploadedFiles
+                                        };
+                                        backupData.push(submissionData);
+                                        await saveBackupToGitHub(backupData);
+
+                                        await sendSubmissionNotification(laterData, hasSubmissions.submissionId);
+                                        laterData.status = 'completed';
+                                        submissions.set(userId, laterData);
+
+                                        console.log('Auto-processed submission for user:', userId);
+                                    }
+                                }
+                            }
+                        } catch (autoError) {
+                            console.error('Auto-check error:', autoError);
+                        }
+                    }, 30000);
                 }
             } catch (error) {
                 console.error('Error checking form status:', error);
-                await interaction.reply({
+                await interaction.followUp({
                     content: '❌ Error checking form status. Please try again.',
                     ephemeral: true
                 });
+            } finally {
+                // Always clean up status check processing state
+                processingConfirmations.delete(statusCheckKey);
             }
         }
 
@@ -1615,7 +2755,7 @@ client.on('interactionCreate', async interaction => {
             const data = submissions.get(userId);
 
             await interaction.update({
-                content: '🎉 **Commission Submission Complete!**\n\nThank you for your submission. All documents have been uploaded and your data has been saved.\n\n✅ **Status:** Complete\n📁 **All Documents:** Uploaded to Google Drive',
+                content: '🎉 **Commission Submission Complete!**\n\nThank you for your submission. All documents have been uploaded and your data has been saved.\n\n✅ **Status:** Complete\n📁 **All Documents:** Successfully uploaded',
                 embeds: [],
                 components: []
             });
@@ -1648,7 +2788,7 @@ client.on('interactionCreate', async interaction => {
             const actionRow = new ActionRowBuilder()
                 .addComponents(
                     new ButtonBuilder()
-                        .setCustomId('retry_google_form')
+                        .setCustomId('retry_jotform')
                         .setLabel('🔄 Retry Form Creation')
                         .setStyle(ButtonStyle.Primary),
                     new ButtonBuilder()
@@ -1665,7 +2805,9 @@ client.on('interactionCreate', async interaction => {
             });
         }
 
-        else if (interaction.customId === 'retry_google_form') {
+        else if (interaction.customId === 'retry_jotform') {
+            await interaction.deferUpdate();
+
             const data = submissions.get(userId);
 
             if (!data || !data.project_name) {
@@ -1677,7 +2819,7 @@ client.on('interactionCreate', async interaction => {
                             .setStyle(ButtonStyle.Primary)
                     );
 
-                await interaction.update({
+                await interaction.editReply({
                     content: '❌ **Session expired or missing data**\n\nYour session has timed out. Use `/fast-comm-submission` to start fresh:',
                     components: [restartRow],
                     embeds: []
@@ -1686,34 +2828,33 @@ client.on('interactionCreate', async interaction => {
             }
 
             try {
-                // Add a small delay to avoid rate limiting
+                // Add a delay to avoid rate limiting
                 await new Promise(resolve => setTimeout(resolve, 1000));
 
-                // Retry creating Google Form for document uploads
-                const formData = await createDocumentUploadForm(data);
+                // Retry creating Jotform for document uploads
+                const formData = await createJotformUpload(data);
 
                 // Store form info
-                data.googleForm = formData;
+                data.jotform = formData;
                 data.status = 'awaiting_form_completion';
                 submissions.set(userId, data);
 
                 const embed = new EmbedBuilder()
-                    .setTitle('📋 Document Upload - Google Form')
-                    .setColor(0x4285F4)
-                    .setDescription('Your personalized Google Form has been created successfully!')
+                    .setTitle('📋 Document Upload - Jotform')
+                    .setColor(0xFF6600)
+                    .setDescription('Your personalized Jotform has been created successfully!')
                     .addFields(
-                        { name: '📝 What to do next:', value: '1. Click the "Upload Documents" button below\n2. Fill out the Google Form with your documents\n3. Submit the form\n4. Return here and click "Check Upload Status"', inline: false },
+                        { name: '📝 What to do next:', value: '1. Click the "Upload Documents" button below\n2. Fill out the Jotform with your documents\n3. Submit the form\n4. Return here and click "Check Upload Status"', inline: false },
                         { name: '📋 Required Documents:', value: '• Booking Form\n• SPA Document\n• LA Document', inline: false }
                     )
-                    .setFooter({ text: 'The form will automatically save your documents to Google Drive' });
+                    .setFooter({ text: 'The form will automatically save your documents' });
 
                 const actionRow = new ActionRowBuilder()
                     .addComponents(
                         new ButtonBuilder()
-                            .setCustomId('open_google_form')
                             .setLabel('📝 Upload Documents')
                             .setStyle(ButtonStyle.Link)
-                            .setURL(formData.responseUrl),
+                            .setURL(formData.formUrl),
                         new ButtonBuilder()
                             .setCustomId('check_upload_status')
                             .setLabel('🔄 Check Upload Status')
@@ -1724,10 +2865,11 @@ client.on('interactionCreate', async interaction => {
                             .setStyle(ButtonStyle.Danger)
                     );
 
-                await interaction.update({
-                    content: '✅ **Form Creation Successful!**\n\n📋 **Your commission data has been saved.**\n🎯 **Google Form created for document uploads!**',
+                await interaction.editReply({
+                    content: '✅ **Form Creation Successful!**\n\n📋 **Your commission data has been saved.**\n🎯 **Jotform created for document uploads!**',
                     embeds: [embed],
-                    components: [actionRow]
+                    components: [actionRow],
+                    ephemeral: true
                 });
 
             } catch (error) {
@@ -1737,18 +2879,18 @@ client.on('interactionCreate', async interaction => {
                     const errorEmbed = new EmbedBuilder()
                         .setTitle('⚠️ Form Creation Still Failing')
                         .setColor(0xFF6B6B)
-                        .setDescription('The Google Form creation is experiencing persistent issues.')
+                        .setDescription('The Jotform creation is experiencing persistent issues.')
                         .addFields(
                             { name: '📋 Your Data Status', value: '✅ All submission data preserved in GitHub backup', inline: false },
                             { name: '🔄 What to try:', value: 'Use `/fast-comm-submission` again - your data will be restored automatically', inline: false },
-                            { name: '🆘 If issues persist:', value: 'Check your Google service account permissions for Forms API', inline: false }
+                            { name: '🆘 If issues persist:', value: 'Check your Jotform API key and permissions', inline: false }
                         )
                         .setTimestamp();
 
                     const alternativeRow = new ActionRowBuilder()
                         .addComponents(
                             new ButtonBuilder()
-                                .setCustomId('retry_google_form')
+                                .setCustomId('retry_jotform')
                                 .setLabel('🔄 Try Again')
                                 .setStyle(ButtonStyle.Primary),
                             new ButtonBuilder()
@@ -1757,7 +2899,7 @@ client.on('interactionCreate', async interaction => {
                                 .setStyle(ButtonStyle.Danger)
                         );
 
-                    await interaction.update({
+                    await interaction.editReply({
                         content: '❌ **Form Creation Failed Again**\n\n💾 **Your data is still safe in GitHub backup!**',
                         embeds: [errorEmbed],
                         components: [alternativeRow]
@@ -1777,6 +2919,51 @@ client.on('interactionCreate', async interaction => {
             await interaction.showModal(modal);
         }
 
+        else if (interaction.customId === 'back_to_form_view') {
+            const data = submissions.get(userId);
+
+            if (!data || !data.jotform) {
+                await interaction.reply({
+                    content: '❌ No form data found. Please restart the submission process.',
+                    ephemeral: true
+                });
+                return;
+            }
+
+            const embed = new EmbedBuilder()
+                .setTitle('📋 Document Upload - Jotform')
+                .setColor(0xFF6600)
+                .setDescription('Your document upload form is ready!')
+                .addFields(
+                    { name: '📝 What to do next:', value: '1. Click the "Upload Documents" button below\n2. Fill out the Jotform with your documents\n3. Submit the form\n4. Return here and click "Check Upload Status"', inline: false },
+                    { name: '📋 Required Documents:', value: '• Booking Form\n• SPA Document\n• LA Document', inline: false },
+                    { name: '📋 Project Info', value: `${data.project_name} - ${data.unit_no}`, inline: false }
+                )
+                .setFooter({ text: 'The form will automatically save your documents' });
+
+            const actionRow = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setLabel('📝 Upload Documents')
+                        .setStyle(ButtonStyle.Link)
+                        .setURL(data.jotform.formUrl),
+                    new ButtonBuilder()
+                        .setCustomId('check_upload_status')
+                        .setLabel('🔄 Check Upload Status')
+                        .setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder()
+                        .setCustomId('cancel_submission')
+                        .setLabel('❌ Cancel')
+                        .setStyle(ButtonStyle.Danger)
+                );
+
+            await interaction.update({
+                content: '✅ **Back to Form Information**\n\n📋 **Your commission data has been saved.**\n🎯 **Document upload form ready!**',
+                embeds: [embed],
+                components: [actionRow]
+            });
+        }
+
         else if (interaction.customId === 'restart_submission') {
             submissions.delete(userId);
             await interaction.reply({
@@ -1785,19 +2972,238 @@ client.on('interactionCreate', async interaction => {
             });
         }
 
+        else if (interaction.customId.startsWith('view_submission_')) {
+            try {
+                const submissionIndex = parseInt(interaction.customId.split('_')[2]);
+                const backupData = await loadBackupFromGitHub();
+
+                if (submissionIndex < 0 || submissionIndex >= backupData.length) {
+                    await interaction.reply({
+                        content: '❌ Submission not found. It may have been deleted.',
+                        ephemeral: true
+                    });
+                    return;
+                }
+
+                const submission = backupData[submissionIndex];
+
+                // Verify this submission belongs to the user
+                if (submission.user_id !== userId) {
+                    await interaction.reply({
+                        content: '❌ You can only view your own submissions.',
+                        ephemeral: true
+                    });
+                    return;
+                }
+
+                // Create detailed submission embed
+                const embed = createConfirmationEmbed(submission);
+                embed.setTitle(`📋 Submission Details: ${submission.project_name}`);
+                embed.setColor(0x28A745);
+
+                // Add document status
+                if (submission.uploadedFiles && submission.uploadedFiles.length > 0) {
+                    const fileList = submission.uploadedFiles
+                        .map(file => `✅ [${file.originalName || file.finalName}](${file.driveLink})`)
+                        .join('\n');
+
+                    embed.addFields({ name: `📂 Uploaded Documents (${submission.uploadedFiles.length})`, value: fileList.length > 1024 ? fileList.substring(0, 1020) + '...' : fileList, inline: false });
+                } else {
+                    embed.addFields({ name: '📂 Documents Status', value: '❌ No documents uploaded', inline: false });
+                }
+
+                // Add submission metadata
+                embed.addFields({
+                    name: '📊 Submission Information',
+                    value: `**Submission ID:** ${submission.jotformSubmissionId || 'N/A'}\n**Submitted:** ${formatGMT8DateString(new Date(submission.submitted_at))}\n**Status:** Complete`,
+                    inline: false
+                });
+
+                // Back button
+                const backRow = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('back_to_my_submissions')
+                            .setLabel('← Back to My Submissions')
+                            .setStyle(ButtonStyle.Secondary)
+                    );
+
+                await interaction.reply({
+                    embeds: [embed],
+                    components: [backRow],
+                    ephemeral: true
+                });
+
+            } catch (error) {
+                console.error('Error viewing submission details:', error);
+                await interaction.reply({
+                    content: '❌ Error loading submission details. Please try again.',
+                    ephemeral: true
+                });
+            }
+        }
+
+        else if (interaction.customId === 'back_to_my_submissions' || interaction.customId === 'refresh_my_submissions') {
+            try {
+                const backupData = await loadBackupFromGitHub();
+                const userSubmissions = backupData.filter(submission => submission.user_id === userId);
+
+                if (userSubmissions.length === 0) {
+                    await interaction.update({
+                        content: '❌ **No submissions found**\n\nYou haven\'t submitted any commission claims yet. Use `/fast-comm-submission` to create your first submission.',
+                        embeds: [],
+                        components: []
+                    });
+                    return;
+                }
+
+                // Create summary embed with all user submissions
+                const embed = new EmbedBuilder()
+                    .setTitle('📋 Your Commission Submissions')
+                    .setColor(0x0099FF)
+                    .setDescription(`Found ${userSubmissions.length} submission(s)`)
+                    .setTimestamp();
+
+                // Create buttons for each submission
+                const buttons = [];
+                const maxButtons = Math.min(userSubmissions.length, 20);
+
+                for (let i = 0; i < maxButtons; i++) {
+                    const submission = userSubmissions[i];
+                    const submissionIndex = backupData.indexOf(submission);
+                    const totalCommission = submission.agents
+                        ?.filter(agent => agent.name)
+                        ?.reduce((sum, agent) => sum + parseFloat(agent.commission || 0), 0) || 0;
+
+                    // Add to embed
+                    embed.addFields({
+                        name: `${i + 1}. ${submission.project_name}`,
+                        value: `**Unit:** ${submission.unit_no}\n**Total Commission:** RM${totalCommission.toFixed(2)}\n**Submitted:** ${formatGMT8DateString(new Date(submission.submitted_at))}\n**Documents:** ${submission.uploadedFiles?.length || 0} file(s)`,
+                        inline: true
+                    });
+
+                    // Create button for detailed view
+                    buttons.push(
+                        new ButtonBuilder()
+                            .setCustomId(`view_submission_${submissionIndex}`)
+                            .setLabel(`View ${submission.project_name}`)
+                            .setStyle(ButtonStyle.Primary)
+                    );
+                }
+
+                // Split buttons into rows
+                const rows = [];
+                for (let i = 0; i < buttons.length; i += 5) {
+                    const rowButtons = buttons.slice(i, i + 5);
+                    rows.push(new ActionRowBuilder().addComponents(rowButtons));
+                }
+
+                // Add refresh button
+                if (rows.length > 0) {
+                    const lastRow = rows[rows.length - 1];
+                    if (lastRow.components.length < 5) {
+                        lastRow.addComponents(
+                            new ButtonBuilder()
+                                .setCustomId('refresh_my_submissions')
+                                .setLabel('🔄 Refresh')
+                                .setStyle(ButtonStyle.Secondary)
+                        );
+                    } else {
+                        rows.push(new ActionRowBuilder().addComponents(
+                            new ButtonBuilder()
+                                .setCustomId('refresh_my_submissions')
+                                .setLabel('🔄 Refresh')
+                                .setStyle(ButtonStyle.Secondary)
+                        ));
+                    }
+                }
+
+                if (userSubmissions.length > maxButtons) {
+                    embed.setFooter({ text: `Showing ${maxButtons} of ${userSubmissions.length} submissions. Use 🔄 Refresh to see all.` });
+                }
+
+                await interaction.update({
+                    content: '',
+                    embeds: [embed],
+                    components: rows
+                });
+
+            } catch (error) {
+                console.error('Error refreshing submissions:', error);
+                await interaction.followUp({
+                    content: '❌ Error refreshing submission data. Please try again.',
+                    ephemeral: true
+                });
+            }
+        }
+
         return;
     }
 });
 
-// Upload file to Google Drive
-async function uploadToGoogleDrive(filePath, fileName, mimeType) {
+// Upload file directly to company Google Drive with organized folder structure
+async function uploadToCompanyGoogleDrive(filePath, fileName, mimeType, userData = null) {
     try {
-        // Create folder if it doesn't exist
-        const folderId = await createOrGetFolder(settings.googleDrive.folderName);
+        // Use your existing OAuth config
+        if (!oauth_config) {
+            throw new Error('Google OAuth not configured. Check GOOGLE_OAUTH_SECRETS environment variable.');
+        }
+
+        // Create OAuth client with your credentials
+        const oauth_client = new google.auth.OAuth2(
+            oauth_config.web.client_id,
+            oauth_config.web.client_secret,
+            oauth_config.web.redirect_uris[0]
+        );
+
+        // Set credentials - you'll need to get these tokens once
+        const accessToken = process.env.COMPANY_DRIVE_ACCESS_TOKEN;
+        const refreshToken = process.env.COMPANY_DRIVE_REFRESH_TOKEN;
+
+        if (!accessToken || !refreshToken) {
+            throw new Error('Please set COMPANY_DRIVE_ACCESS_TOKEN and COMPANY_DRIVE_REFRESH_TOKEN in Secrets. Run get_oauth_tokens.js to get them.');
+        }
+
+        oauth_client.setCredentials({ 
+            access_token: accessToken,
+            refresh_token: refreshToken
+        });
+
+        const companyDrive = google.drive({ version: 'v3', auth: oauth_client });
+
+        // Create organized folder structure: Discord Uploads > Agent Claim Request > [Date - Username]
+        const discordUploadsFolder = await createOrGetCompanyFolder(companyDrive, 'Discord Uploads');
+        const agentClaimFolder = await createOrGetCompanySubFolder(companyDrive, 'Agent Claim Request', discordUploadsFolder);
+
+        // Create unique folder for this submission if userData is provided
+        let targetFolderId = agentClaimFolder;
+        if (userData && userData.username) {
+            // Create a more specific cache key including session token for uniqueness
+            const sessionToken = userData.sessionToken || 'no_token';
+            const cacheKey = `${userData.userId}_${userData.project_name}_${userData.unit_no}_${sessionToken}`;
+
+            // Check if we already have a folder for this submission
+            if (userFolderCache.has(cacheKey)) {
+                targetFolderId = userFolderCache.get(cacheKey);
+                console.log('✅ Using cached submission folder for:', cacheKey);
+            } else {
+                const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
+                const projectName = userData.project_name?.replace(/[^a-zA-Z0-9]/g, '_') || 'Project';
+                const unitNo = userData.unit_no?.replace(/[^a-zA-Z0-9]/g, '_') || 'Unit';
+
+                // Use consistent folder naming without time component to prevent duplicates
+                const userFolderName = `${today} - ${userData.username} - ${projectName} - ${unitNo}`;
+                targetFolderId = await createOrGetCompanySubFolder(companyDrive, userFolderName, agentClaimFolder);
+
+                // Cache the folder ID for this submission
+                userFolderCache.set(cacheKey, targetFolderId);
+                console.log('✅ Created/cached submission folder:', userFolderName);
+            }
+        }
 
         const fileMetadata = {
             name: fileName,
-            parents: [folderId]
+            parents: [targetFolderId]
         };
 
         const media = {
@@ -1805,170 +3211,301 @@ async function uploadToGoogleDrive(filePath, fileName, mimeType) {
             body: require('fs').createReadStream(filePath)
         };
 
-        const response = await drive.files.create({
+        const response = await companyDrive.files.create({
             resource: fileMetadata,
             media: media,
             fields: 'id, name, webViewLink'
         });
 
-        console.log('File uploaded to Google Drive:', response.data.name);
+        console.log('✅ File uploaded to company Google Drive:', response.data.name);
+        console.log('✅ Folder structure: Discord Uploads > Agent Claim Request > ' + (userData?.username ? `${new Date().toISOString().split('T')[0]} - ${userData.username}` : 'Agent Claim Request'));
         return response.data;
     } catch (error) {
-        console.error('Error uploading to Google Drive:', error);
+        console.error('❌ Error uploading to company Google Drive:', error);
         throw error;
     }
 }
 
-// Create Google Form for document uploads
-async function createDocumentUploadForm(userData) {
+// Legacy function - now redirects to company drive
+async function uploadToGoogleDrive(filePath, fileName, mimeType, userData = null) {
+    return await uploadToCompanyGoogleDrive(filePath, fileName, mimeType, userData);
+}
+
+// Create Jotform URL with prefilled data (using template form)
+async function createJotformUpload(data, sessionToken) {
     try {
-        const formTitle = `Commission Documents - ${userData.project_name} (${userData.unit_no})`;
+        if (!JOTFORM_TEMPLATE_ID) {
+            throw new Error('JOTFORM_TEMPLATE_ID not configured');
+        }
 
-        // Step 1: Create the form with only the title
-        const form = await forms.forms.create({
-            requestBody: {
-                info: {
-                    title: formTitle
-                }
+        // Get webhook URL from environment variable or construct from Replit
+        let webhookUrl = process.env.WEBHOOK_URL;
+
+        if (!webhookUrl) {
+            // Construct webhook URL from Replit environment
+            if (process.env.REPL_SLUG && process.env.REPL_OWNER) {
+                webhookUrl = `https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.repl.co/webhook/jotform`;
+                console.log('Constructed webhook URL:', webhookUrl);
+            } else {
+                throw new Error('WEBHOOK_URL environment variable is required or REPL_SLUG/REPL_OWNER not available');
             }
-        });
+        }
 
-        const formId = form.data.formId;
+        console.log('Using webhook URL:', webhookUrl);
 
-        // Step 2: Add description and file upload questions using batchUpdate
-        const folderId = await createOrGetFolder(settings.googleDrive.folderName);
-
-        const requests = [
-            // Update form description
-            {
-                updateFormInfo: {
-                    info: {
-                        title: formTitle,
-                        description: `Please upload your commission documents for:\n\nProject: ${userData.project_name}\nUnit: ${userData.unit_no}\nCustomer: ${userData.customer_name}\n\nRequired Documents: Booking Form, SPA, LA`
-                    },
-                    updateMask: 'description'
+        // Set webhook for the template form (one-time setup)
+        try {
+            // First, delete any existing webhooks
+            const existingWebhooksResponse = await fetch(`${JOTFORM_BASE_URL}/form/${JOTFORM_TEMPLATE_ID}/webhooks`, {
+                headers: {
+                    'APIKEY': JOTFORM_API_KEY
                 }
-            },
-            // Add Booking Form question
-            {
-                createItem: {
-                    item: {
-                        title: 'Booking Form',
-                        description: 'Upload your Booking Form document (PDF, DOC, DOCX, JPG, PNG)',
-                        questionItem: {
-                            question: {
-                                required: true,
-                                fileUploadQuestion: {
-                                    folderId: folderId,
-                                    types: ['PDF', 'DOCUMENT', 'PRESENTATION', 'DRAWING', 'IMAGE'],
-                                    maxFiles: 5,
-                                    maxFileSize: 10485760 // 10MB
+            });
+
+            if (existingWebhooksResponse.ok) {
+                const existingWebhooks = await existingWebhooksResponse.json();
+                console.log('Existing webhooks:', existingWebhooks.content?.length || 0);
+
+                // Delete existing webhooks if any
+                if (existingWebhooks.content && existingWebhooks.content.length > 0) {
+                    for (const webhook of existingWebhooks.content) {
+                        try {
+                            const deleteResponse = await fetch(`${JOTFORM_BASE_URL}/form/${JOTFORM_TEMPLATE_ID}/webhooks/${webhook.id}`, {
+                                method: 'DELETE',
+                                headers: {
+                                    'APIKEY': JOTFORM_API_KEY
                                 }
+                            });
+
+                            if (deleteResponse.ok) {
+                                console.log('🗑️ Deleted existing webhook:', webhook.id);
+                            } else {
+                                const deleteResult = await deleteResponse.json();
+                                console.log('Failed to delete webhook:', webhook.id, deleteResult);
                             }
+
+                            // Add delay between deletions
+                            await new Promise(resolve => setTimeout(resolve, 500));
+                        } catch (deleteError) {
+                            console.log('Failed to delete webhook:', webhook.id, deleteError.message);
                         }
-                    },
-                    location: { index: 0 }
-                }
-            },
-            // Add SPA Document question
-            {
-                createItem: {
-                    item: {
-                        title: 'SPA Document',
-                        description: 'Upload your SPA document (PDF, DOC, DOCX, JPG, PNG)',
-                        questionItem: {
-                            question: {
-                                required: true,
-                                fileUploadQuestion: {
-                                    folderId: folderId,
-                                    types: ['PDF', 'DOCUMENT', 'PRESENTATION', 'DRAWING', 'IMAGE'],
-                                    maxFiles: 5,
-                                    maxFileSize: 10485760 // 10MB
-                                }
-                            }
-                        }
-                    },
-                    location: { index: 1 }
-                }
-            },
-            // Add LA Document question
-            {
-                createItem: {
-                    item: {
-                        title: 'LA Document',
-                        description: 'Upload your LA document (PDF, DOC, DOCX, JPG, PNG)',
-                        questionItem: {
-                            question: {
-                                required: true,
-                                fileUploadQuestion: {
-                                    folderId: folderId,
-                                    types: ['PDF', 'DOCUMENT', 'PRESENTATION', 'DRAWING', 'IMAGE'],
-                                    maxFiles: 5,
-                                    maxFileSize: 10485760 // 10MB
-                                }
-                            }
-                        }
-                    },
-                    location: { index: 2 }
+                    }
+
+                    // Wait a bit after deletions before adding new webhook
+                    await new Promise(resolve => setTimeout(resolve, 1000));
                 }
             }
-        ];
 
-        await forms.forms.batchUpdate({
-            formId: formId,
-            requestBody: { requests }
-        });
+            // Now set the new webhook
+            const webhookResponse = await fetch(`${JOTFORM_BASE_URL}/form/${JOTFORM_TEMPLATE_ID}/webhooks`, {
+                method: 'POST',
+                headers: {
+                    'APIKEY': JOTFORM_API_KEY,
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                },
+                body: `webhookURL=${encodeURIComponent(webhookUrl)}`
+            });
 
-        // Step 3: Publish the form (required for new API behavior)
-        await forms.forms.setPublishSettings({
-            formId: formId,
-            requestBody: {
-                publishedSettings: {
-                    responderInputRequired: false
+            const webhookResult = await webhookResponse.json();
+
+            if (webhookResponse.ok) {
+                console.log('✅ Webhook successfully set for Jotform:', webhookUrl);
+                console.log('✅ Webhook ID:', webhookResult.content);
+            } else {
+                // Check if webhook already exists (this is actually OK)
+                if (webhookResponse.status === 400 && webhookResult.message && webhookResult.message.includes('already in WebHooks List')) {
+                    console.log('✅ Webhook already exists for this form - this is fine!');
+                    console.log('🔗 Webhook URL:', webhookUrl);
+                } else {
+                    console.error('❌ Failed to set webhook:', webhookResponse.status, webhookResult);
+                    console.error('❌ Response body:', JSON.stringify(webhookResult, null, 2));
+
+                    // Check if it's a permission issue
+                    if (webhookResponse.status === 403) {
+                        console.error('❌ Permission denied. Check if your Jotform API key has webhook permissions.');
+                    } else if (webhookResponse.status === 400) {
+                        console.error('❌ Bad request. Check if webhook URL is valid and accessible.');
+                    }
                 }
             }
-        });
+        } catch (webhookError) {
+            console.error('❌ Webhook setup error:', webhookError.message);
+        }
 
-        // Step 4: Make form publicly accessible
-        await drive.permissions.create({
-            fileId: formId,
-            requestBody: {
-                role: 'writer',
-                type: 'anyone'
-            }
-        });
+        // Use prefilled form URL with unique session token embedded in project info for perfect matching
+        // Use prefilled form URL with user_id and price_token fields
+        const formUrl = `https://form.jotform.com/${JOTFORM_TEMPLATE_ID}?user_id=${encodeURIComponent(data.userId)}&price_token=${encodeURIComponent(sessionToken)}`;
 
-        const formUrl = `https://docs.google.com/forms/d/${formId}/edit`;
-        const responseUrl = `https://docs.google.com/forms/d/${formId}/viewform`;
-
-        console.log('Created and published Google Form:', formTitle);
-        return { formId, formUrl, responseUrl };
+        console.log('Generated Jotform URL with session token:', sessionToken);
+        console.log('Generated Jotform URL for:', data.project_name);
+        return { 
+            formId: JOTFORM_TEMPLATE_ID, 
+            formUrl: formUrl,
+            isTemplate: true,
+            webhookUrl: webhookUrl,
+            sessionToken: sessionToken
+        };
 
     } catch (error) {
-        console.error('Error creating Google Form:', error);
+        console.error('Error creating Jotform URL:', error);
         throw error;
     }
 }
 
-// Check if form has responses
-async function checkFormResponses(formId) {
+// Check if Jotform has submissions
+async function checkJotformSubmissions(formId) {
     try {
-        const responses = await forms.forms.responses.list({
-            formId: formId
+        const response = await fetch(`${JOTFORM_BASE_URL}/form/${formId}/submissions`, {
+            headers: {
+                'APIKEY': JOTFORM_API_KEY
+            }
         });
 
-        return responses.data.responses && responses.data.responses.length > 0;
+        if (!response.ok) {
+            throw new Error(`Jotform API error: ${response.status} ${response.statusText}`);
+        }
+
+        const result = await response.json();
+        return result.content && result.content.length > 0;
     } catch (error) {
-        console.error('Error checking form responses:', error);
+        console.error('Error checking Jotform submissions:', error);
         return false;
     }
 }
 
-// Create or get existing folder
-async function createOrGetFolder(folderName) {
+// Check for token-based Jotform submissions (no time window - perfect matching)
+async function checkForTokenBasedJotformSubmissions(formId, userData) {
+    try {
+        const response = await fetch(`${JOTFORM_BASE_URL}/form/${formId}/submissions?limit=20&orderby=created_at`, {
+            headers: {
+                'APIKEY': JOTFORM_API_KEY
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error(`Jotform API error: ${response.status} ${response.statusText}`);
+        }
+
+        const result = await response.json();
+
+        if (!result.content || result.content.length === 0) {
+            console.log('No submissions found in form');
+            return false;
+        }
+
+        console.log(`Found ${result.content.length} total submission(s) in form`);
+        console.log('Looking for submissions with session token:', userData.sessionToken);
+
+        // First try: Look for session token in session_id field or other answers
+        for (const submission of result.content) {
+            const answers = submission.answers;
+
+            // Check each answer for the session token
+            for (const questionId in answers) {
+                const answer = answers[questionId];
+
+                // Check if this is the session_id field specifically
+                if (answer.name === 'session_id' && answer.answer === userData.sessionToken) {
+                    console.log('✅ Found submission with matching session_id field:', submission.id);
+                    return {
+                        submissionId: submission.id,
+                        hasFiles: true
+                    };
+                }
+
+                // Also check other text fields that might contain the token
+                if (answer.answer && typeof answer.answer === 'string') {
+                    const answerText = answer.answer;
+
+                    if (answerText.includes(userData.sessionToken)) {
+                        console.log('✅ Found submission with matching session token:', submission.id);
+                        console.log('✅ Session token:', userData.sessionToken);
+                        console.log('✅ User project:', userData.project_name, '-', userData.unit_no);
+                        return {
+                            submissionId: submission.id,
+                            hasFiles: true
+                        };
+                    }
+                }
+            }
+        }
+
+        console.log('❌ No submissions found with session token:', userData.sessionToken);
+        return false;
+    } catch (error) {
+        console.error('Error checking for token-based Jotform submissions:', error);
+        return false;
+    }
+}
+
+// Create or get existing folder in company Google Drive
+async function createOrGetCompanyFolder(companyDrive, folderName) {
     try {
         // Search for existing folder
-        const response = await drive.files.list({
+        const response = await companyDrive.files.list({
+            q: `name='${folderName}' and mimeType='application/vnd.google-apps.folder'`,
+            spaces: 'drive'
+        });
+
+        if (response.data.files.length > 0) {
+            console.log('✅ Found existing folder:', folderName);
+            return response.data.files[0].id;
+        }
+
+        // Create new folder
+        const folder = await companyDrive.files.create({
+            resource: {
+                name: folderName,
+                mimeType: 'application/vnd.google-apps.folder'
+            },
+            fields: 'id'
+        });
+
+        console.log('✅ Created folder:', folderName);
+        return folder.data.id;
+    } catch (error) {
+        console.error('❌ Error with folder:', error);
+        throw error;
+    }
+}
+
+// Create or get existing subfolder within a parent folder
+async function createOrGetCompanySubFolder(companyDrive, folderName, parentFolderId) {
+    try {
+        // Search for existing subfolder within the parent folder
+        const response = await companyDrive.files.list({
+            q: `name='${folderName}' and mimeType='application/vnd.google-apps.folder' and '${parentFolderId}' in parents`,
+            spaces: 'drive'
+        });
+
+        if (response.data.files.length > 0) {
+            console.log('✅ Found existing subfolder:', folderName);
+            return response.data.files[0].id;
+        }
+
+        // Create new subfolder within parent
+        const folder = await companyDrive.files.create({
+            resource: {
+                name: folderName,
+                mimeType: 'application/vnd.google-apps.folder',
+                parents: [parentFolderId]
+            },
+            fields: 'id'
+        });
+
+        console.log('✅ Created subfolder:', folderName, 'in parent:', parentFolderId);
+        return folder.data.id;
+    } catch (error) {
+        console.error('❌ Error with subfolder:', error);
+        throw error;
+    }
+}
+
+// Create or get existing folder for user (legacy support)
+async function createOrGetFolderForUser(userDrive, folderName) {
+    try {
+        // Search for existing folder
+        const response = await userDrive.files.list({
             q: `name='${folderName}' and mimeType='application/vnd.google-apps.folder'`,
             spaces: 'drive'
         });
@@ -1983,7 +3520,46 @@ async function createOrGetFolder(folderName) {
             mimeType: 'application/vnd.google-apps.folder'
         };
 
-        const folder = await drive.files.create({
+        const folder = await userDrive.files.create({
+            resource: folderMetadata,
+            fields: 'id'
+        });
+
+        console.log('Created Google Drive folder for user:', folderName);
+
+        return folder.data.id;
+    } catch (error) {
+        console.error('Error creating/getting folder for user:', error);
+        throw error;
+    }
+}
+
+// Legacy function
+async function createOrGetFolder(folderName, driveInstance = null) {
+    try {
+        const driveToUse = driveInstance || drive;
+
+        if (!driveToUse) {
+            throw new Error('No Google Drive instance available');
+        }
+
+        // Search for existing folder
+        const response = await driveToUse.files.list({
+            q: `name='${folderName}' and mimeType='application/vnd.google-apps.folder'`,
+            spaces: 'drive'
+        });
+
+        if (response.data.files.length > 0) {
+            return response.data.files[0].id;
+        }
+
+        // Create new folder
+        const folderMetadata = {
+            name: folderName,
+            mimeType: 'application/vnd.google-apps.folder'
+        };
+
+        const folder = await driveToUse.files.create({
             resource: folderMetadata,
             fields: 'id'
         });
@@ -2078,14 +3654,114 @@ app.get('/upload/:userId', (req, res) => {
     res.send(html);
 });
 
+// OAuth routes
+app.get('/oauth2callback', async (req, res) => {
+    try {
+        const userId = req.query.state;
+        const code = req.query.code;
+
+        if (!code) {
+            return res.status(400).send('Authorization code not provided');
+        }
+
+        const oauth_flow = createOAuthFlow();
+        const { tokens } = await oauth_flow.getToken(code);
+
+        // Store user credentials in session
+        req.session.userId = userId;
+        req.session.credentials = tokens;
+
+        // Update user's submission data with access token
+        const userData = submissions.get(userId);
+        if (userData) {
+            userData.googleAccessToken = tokens.access_token;
+            userData.status = 'authenticated';
+            submissions.set(userId, userData);
+        }
+
+        res.send(`
+            <html>
+                <head>
+                    <title>Authentication Success</title>
+                    <style>
+                        body { font-family: Arial, sans-serif; text-align: center; padding: 50px; }
+                        .success { color: #28a745; }
+                        .container { max-width: 500px; margin: 0 auto; }
+                    </style>
+                </head>
+                <body>
+                    <div class="container">
+                        <h1 class="success">✅ Authentication Successful!</h1>
+                        <p>You have successfully connected your Google account.</p>
+                        <p><strong>You can now close this tab and return to Discord.</strong></p>
+                        <p>Your files will be uploaded to your personal Google Drive.</p>
+                    </div>
+                    <script>
+                        setTimeout(() => {
+                            window.close();
+                        }, 5000);
+                    </script>
+                </body>
+            </html>
+        `);
+    } catch (error) {
+        console.error('OAuth callback error:', error);
+        res.status(500).send('Authentication failed. Please try again.');
+    }
+});
+
+// === OAuth Home Page & Privacy Policy Routes ===
+
+// Home page - shown as "Application home page" in Google OAuth consent screen
+app.get('/', (req, res) => {
+  res.send(`
+    <html>
+      <head><title>Discord Bot Drive Uploader</title></head>
+      <body>
+        <h1>Discord Bot Drive Uploader</h1>
+        <p>This application uploads files from Discord or Jotform directly to Google Drive for company use.</p>
+        <p>No other data is stored or shared.</p>
+        <p><a href="/privacy">Privacy Policy</a></p>
+      </body>
+    </html>
+  `);
+});
+
+// Privacy policy page - shown as "Application privacy policy link" in Google OAuth consent screen
+app.get('/privacy', (req, res) => {
+  res.send(`
+    <html>
+      <head><title>Privacy Policy</title></head>
+      <body>
+        <h1>Privacy Policy</h1>
+        <p>This app is used internally by the company to upload files to Google Drive.</p>
+        <p>We only collect and process files explicitly uploaded by the user via Discord or Jotform.</p>
+        <p>No personal data is sold, shared, or used for advertising purposes.</p>
+        <p>All data is stored securely in Google Drive and is accessible only by authorized company members.</p>
+      </body>
+    </html>
+  `);
+});
+
 // Express route for file upload
 app.post('/upload/:userId', upload.array('documents'), async (req, res) => {
     try {
         const userId = req.params.userId;
+        const userData = submissions.get(userId);
+
+        if (!userData || !userData.googleAccessToken) {
+            return res.status(401).json({
+                success: false,
+                message: 'Please authenticate with Google first'
+            });
+        }
+
         const uploadedFiles = [];
+        const userDrive = createUserGoogleDrive(userData.googleAccessToken);
 
         for (const file of req.files) {
-            const driveFile = await uploadToGoogleDrive(
+            const driveFile = await uploadToUserGoogleDrive(
+                userDrive,
                 file.path,
                 `${userId}_${Date.now()}_${file.originalname}`,
                 file.mimetype
@@ -2103,17 +3779,466 @@ app.post('/upload/:userId', upload.array('documents'), async (req, res) => {
 
         res.json({ 
             success: true, 
-            message: 'Files uploaded successfully to Google Drive',
+            message: 'Files uploaded successfully to your Google Drive',
             files: uploadedFiles
         });
     } catch (error) {
         console.error('Upload error:', error);
         res.status(500).json({ 
             success: false, 
-            message: 'Failed to upload files' 
+            message: 'Failed to upload files'
         });
     }
 });
+
+// Webhook endpoint for Jotform submissions
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Debug endpoint to check Jotform webhooks
+app.get('/debug/webhooks', async (req, res) => {
+    try {
+        if (!JOTFORM_TEMPLATE_ID || !JOTFORM_API_KEY) {
+            return res.json({ error: 'Jotform not configured' });
+        }
+
+        const response = await fetch(`${JOTFORM_BASE_URL}/form/${JOTFORM_TEMPLATE_ID}/webhooks`, {
+            headers: {
+                'APIKEY': JOTFORM_API_KEY
+            }
+        });
+
+        const webhooks = await response.json();
+
+        res.json({
+            templateFormId: JOTFORM_TEMPLATE_ID,
+            expectedWebhookUrl: process.env.WEBHOOK_URL,
+            currentWebhooks: webhooks.content,
+            status: response.ok ? 'OK' : 'ERROR'
+        });
+    } catch (error) {
+        res.json({ error: error.message });
+    }
+});
+
+app.post('/webhook/jotform', async (req, res) => {
+    try {
+        console.log('Webhook received:', req.body);
+
+        // Get submission data from webhook
+        const submissionId = req.body.submissionID;
+        const formId = req.body.formID;
+        const rawRequest = req.body.rawRequest || {};
+
+        // Extract session token from submission
+        const sessionToken = rawRequest.session_token || rawRequest.price_token || '';
+        const extractedUserId = rawRequest.user_id || '';
+
+        console.log('Processing webhook for:', { submissionId, formId, sessionToken, extractedUserId });
+
+        // Multiple layer protection against duplicates
+        if (processedSubmissions.has(submissionId)) {
+            console.log('Submission already processed:', submissionId);
+            res.status(200).json({ success: true, message: 'Already processed' });
+            return;
+        }
+
+        if (processingSubmissions.has(submissionId)) {
+            console.log('Submission currently being processed:', submissionId);
+            res.status(200).json({ success: true, message: 'Currently processing' });
+            return;
+        }
+
+        // Check if this session token was already processed
+        if (sessionToken && processedTokens.has(sessionToken)) {
+            console.log('Session token already processed:', sessionToken);
+            res.status(200).json({ success: true, message: 'Token already processed' });
+            return;
+        }
+
+        // IMMEDIATELY mark as processed to prevent any race conditions
+        processedSubmissions.add(submissionId);
+        processingSubmissions.add(submissionId);
+        if (sessionToken) {
+            processedTokens.add(sessionToken);
+        }
+
+        // Find user session using unique token (perfect 1:1 matching)
+        let userData = null;
+        let matchedUserId = null;
+
+        if (sessionToken) {
+            // Perfect token-based matching - no ambiguity
+            matchedUserId = tokenToUserId.get(sessionToken);
+            if (matchedUserId) {
+                userData = submissions.get(matchedUserId);
+                if (userData && userData.sessionToken === sessionToken && userData.status === 'awaiting_form_completion') {
+                    console.log('✅ Perfect token match found:', matchedUserId);
+                    console.log('✅ Session token:', sessionToken);
+                    console.log('✅ User project:', userData.project_name, '-', userData.unit_no);
+
+                    // Additional check: if user already has uploaded files, skip this
+                    if (userData.uploadedFiles && userData.uploadedFiles.length > 0) {
+                        console.log('❌ User already has uploaded files, skipping duplicate processing');
+                        processingSubmissions.delete(submissionId);
+                        res.status(200).json({ success: true, message: 'User already has files' });
+                        return;
+                    }
+                } else {
+                    console.log('❌ Token found but user session invalid:', matchedUserId);
+                    userData = null;
+                    matchedUserId = null;
+                }
+            } else {
+                console.log('❌ Session token not found in token map:', sessionToken);
+            }
+        } else {
+            console.log('❌ No session token provided in webhook');
+        }
+
+        if (userData && matchedUserId) {
+            try {
+                // Download and transfer files from Jotform to Google Drive
+                const uploadedFiles = await transferJotformFilesToGoogleDrive(submissionId, userData);
+
+                // Only proceed if files were actually transferred
+                if (uploadedFiles && uploadedFiles.length > 0) {
+                    // Update user data with Google Drive file info
+                    userData.uploadedFiles = uploadedFiles;
+                    userData.jotformSubmissionId = submissionId;
+
+                    // NOW save to GitHub backup (only after successful file upload)
+                    const backupData = await loadBackupFromGitHub();
+                    const submissionData = {
+                        ...userData,
+                        user_id: matchedUserId,
+                        username: userData.username || 'Unknown User',
+                        submitted_at: getGMT8Date().toISOString(),
+                        uploadedFiles: uploadedFiles
+                    };
+                    backupData.push(submissionData);
+                    await saveBackupToGitHub(backupData);
+
+                    // Send notification to channel with file info
+                    await sendSubmissionNotification(userData, submissionId);
+
+                    // Update user's submission status to completed
+                    userData.status = 'completed';
+                    submissions.set(matchedUserId, userData);
+
+                    // Clean up token mapping after successful processing
+                    tokenToUserId.delete(userData.sessionToken);
+
+                    console.log('✅ Webhook processed successfully for user:', matchedUserId);
+                    console.log('✅ Files transferred to Google Drive:', uploadedFiles.length);
+                    console.log('✅ Session token cleaned up:', userData.sessionToken);
+                } else {
+                    console.log('❌ No files were transferred - not marking as completed');
+                    // Remove from processed sets if no files were transferred
+                    processedSubmissions.delete(submissionId);
+                    if (sessionToken) {
+                        processedTokens.delete(sessionToken);
+                    }
+                }
+            } catch (processingError) {
+                console.error('Error during webhook processing:', processingError);
+                // Remove from processed sets if processing failed so it can be retried
+                processedSubmissions.delete(submissionId);
+                if (sessionToken) {
+                    processedTokens.delete(sessionToken);
+                }
+            } finally {
+                // Always remove from currently processing set
+                processingSubmissions.delete(submissionId);
+            }
+        } else {
+            console.log('❌ No matching user session found for submission:', submissionId);
+            console.log('❌ Session token provided:', sessionToken);
+            console.log('❌ Available sessions:', Array.from(submissions.keys()));
+            console.log('❌ Available tokens:', Array.from(tokenToUserId.keys()));
+
+            // Remove from processing sets since we're not processing this one
+            processingSubmissions.delete(submissionId);
+            processingSubmissions.delete(submissionId);
+            if (sessionToken) {
+                processedTokens.delete(sessionToken);
+            }
+        }
+
+        res.status(200).json({ success: true, message: 'Webhook processed' });
+    } catch (error) {
+        console.error('Webhook error:', error);
+        // Clean up processing state on error
+        const submissionId = req.body.submissionID;
+        const sessionToken = req.body.rawRequest?.session_token || req.body.rawRequest?.price_token || '';
+
+        if (submissionId) {
+            processingSubmissions.delete(submissionId);
+            processingSubmissions.delete(submissionId);
+        }
+        if (sessionToken) {
+            processedTokens.delete(sessionToken);
+        }
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+
+
+// Transfer files from Jotform to Google Drive
+async function transferJotformFilesToGoogleDrive(submissionId, userData) {
+    try {
+        console.log('Starting file transfer for submission:', submissionId);
+
+        // Check if this submission ID has already been processed
+        if (processedSubmissions.has(submissionId)) {
+            console.log('Submission already processed, skipping transfer for:', submissionId);
+            return userData.uploadedFiles || [];
+        }
+
+        // Additional check: if user already has uploaded files, skip this
+        if (userData.uploadedFiles && userData.uploadedFiles.length > 0) {
+            console.log('User already has uploaded files, skipping transfer for:', submissionId);
+            processedSubmissions.add(submissionId); // Mark as processed
+            return userData.uploadedFiles;
+        }
+
+        // Mark as being processed to prevent concurrent processing
+        if (processingSubmissions.has(submissionId)) {
+            console.log('Submission currently being processed, waiting for:', submissionId);
+            return [];
+        }
+        processingSubmissions.add(submissionId);
+
+        // Get submission details from Jotform API
+        const submissionResponse = await fetch(`${JOTFORM_BASE_URL}/submission/${submissionId}`, {
+            headers: {
+                'APIKEY': JOTFORM_API_KEY
+            }
+        });
+
+        if (!submissionResponse.ok) {
+            throw new Error(`Failed to fetch submission: ${submissionResponse.status}`);
+        }
+
+        const submissionData = await submissionResponse.json();
+        const answers = submissionData.content.answers;
+
+        console.log('Submission data received, processing files...');
+
+        const uploadedFiles = [];
+
+        // Process each answer to find file uploads
+        for (const questionId in answers){
+            const answer = answers[questionId];
+
+            // Check if this answer contains file uploads
+            if (answer.type === 'control_fileupload' && answer.answer) {
+                const files = Array.isArray(answer.answer) ? answer.answer : [answer.answer];
+
+                for (const fileUrl of files) {
+                    if (fileUrl && fileUrl.trim()) {
+                        try {
+                            console.log('Downloading file from Jotform:', fileUrl);
+
+                            // Download file from Jotform with proper binary handling
+                            const fileResponse = await fetch(fileUrl);
+                            if (!fileResponse.ok) {
+                                console.error('Failed to download file:', fileUrl, 'Status:', fileResponse.status);
+                                continue;
+                            }
+
+                            // Use arrayBuffer for better binary file handling
+                            const arrayBuffer = await fileResponse.arrayBuffer();
+                            const fileBuffer = Buffer.from(arrayBuffer);
+
+                            // Validate file size
+                            if (fileBuffer.length === 0) {
+                                console.error('Downloaded file is empty:', fileUrl);
+                                continue;
+                            }
+
+                            console.log('Downloaded file size:', fileBuffer.length, 'bytes');
+
+                            // Extract filename from URL or create one
+                            const urlParts = fileUrl.split('/');
+                            const originalFilename = urlParts[urlParts.length - 1] || `document_${Date.now()}`;
+                            const cleanFilename = originalFilename.split('?')[0]; // Remove query parameters
+
+                            // Validate filename
+                            if (!cleanFilename || cleanFilename.length === 0) {
+                                console.error('Invalid filename extracted from URL:', fileUrl);
+                                continue;
+                            }
+
+                            // Create a descriptive filename
+                            const projectName = userData.project_name?.replace(/[^a-zA-Z0-9]/g, '_') || 'project';
+                            const timestamp = new Date().toISOString().split('T')[0];
+                            const uniqueId = Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+                            const finalFilename = `${projectName}_${userData.unit_no || 'unit'}_${timestamp}_${uniqueId}_${cleanFilename}`;
+
+                            // Save temporarily with unique path to avoid conflicts
+                            const tempPath = `uploads/temp_${uniqueId}_${cleanFilename}`;
+                            
+                            // Write file with binary flag to preserve integrity
+                            await fs.writeFile(tempPath, fileBuffer, { encoding: null });
+
+                            // Verify the written file size matches
+                            const stats = await fs.stat(tempPath);
+                            if (stats.size !== fileBuffer.length) {
+                                console.error('File size mismatch after writing:', stats.size, 'vs', fileBuffer.length);
+                                await fs.unlink(tempPath);
+                                continue;
+                            }
+
+                            console.log('File written to temp storage successfully, size:', stats.size, 'bytes');
+
+                            // Determine MIME type based on file extension
+                            const extension = cleanFilename.toLowerCase().split('.').pop();
+                            let mimeType = 'application/octet-stream';
+                            switch (extension) {
+                                case 'pdf': mimeType = 'application/pdf'; break;
+                                case 'doc': mimeType = 'application/msword'; break;
+                                case 'docx': mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'; break;
+                                case 'xlsx': mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'; break;
+                                case 'xls': mimeType = 'application/vnd.ms-excel'; break;
+                                case 'pptx': mimeType = 'application/vnd.openxmlformats-officedocument.presentationml.presentation'; break;
+                                case 'ppt': mimeType = 'application/vnd.ms-powerpoint'; break;
+                                case 'jpg':
+                                case 'jpeg': mimeType = 'image/jpeg'; break;
+                                case 'png': mimeType = 'image/png'; break;
+                                case 'gif': mimeType = 'image/gif'; break;
+                                case 'bmp': mimeType = 'image/bmp'; break;
+                                case 'tiff':
+                                case 'tif': mimeType = 'image/tiff'; break;
+                            }
+
+                            // Upload to Google Drive with organized folder structure
+                            console.log('Uploading to Google Drive:', finalFilename, 'MIME type:', mimeType);
+                            const enhancedUserData = {
+                                ...userData,
+                                username: userData.username || 'Unknown User'
+                            };
+                            const driveFile = await uploadToCompanyGoogleDrive(tempPath, finalFilename, mimeType, enhancedUserData);
+
+                            uploadedFiles.push({
+                                originalName: cleanFilename,
+                                finalName: finalFilename,
+                                driveId: driveFile.id,
+                                driveLink: driveFile.webViewLink,
+                                jotformUrl: fileUrl,
+                                questionId: questionId,
+                                fileSize: stats.size,
+                                mimeType: mimeType
+                            });
+
+                            // Clean up temp file
+                            await fs.unlink(tempPath);
+
+                            console.log('File successfully transferred:', finalFilename, 'Size:', stats.size, 'bytes');
+
+                        } catch (fileError) {
+                            console.error('Error processing individual file:', fileError);
+                            // Continue with other files even if one fails
+                        }
+                    }
+                }
+            }
+        }
+
+        console.log(`File transfer completed. ${uploadedFiles.length} files transferred to Google Drive.`);
+
+        // Mark as processed only after successful transfer
+        if (uploadedFiles.length > 0) {
+            processedSubmissions.add(submissionId);
+        }
+
+        return uploadedFiles;
+
+    } catch (error) {
+        console.error('Error transferring files from Jotform to Google Drive:', error);
+        return []; // Return empty array instead of throwing to prevent webhook failure
+    } finally {
+        // Always clean up processing state
+        processingSubmissions.delete(submissionId);
+    }
+}
+
+// Send notification to channel when documents are submitted
+async function sendSubmissionNotification(userData, submissionId) {
+    try {
+        // Prevent duplicate notifications
+        const notificationKey = `${submissionId}_${userData.userId}`;
+        if (notificationsSent.has(notificationKey)) {
+            console.log('Notification already sent for:', notificationKey);
+            return;
+        }
+        notificationsSent.add(notificationKey);
+
+        const channel = client.channels.cache.get(NOTIFICATION_CHANNEL_ID);
+        if (!channel) {
+            console.error('Notification channel not found:', NOTIFICATION_CHANNEL_ID);
+            return;
+        }
+
+        const totalCommission = userData.agents
+            ?.filter(agent => agent.name)
+            ?.reduce((sum, agent) => sum + parseFloat(agent.commission || 0), 0) || 0;
+
+        // Calculate fast commission based on project-specific percentage
+        const fastCommissionPercentage = getFastCommissionPercentage(userData.project_name);
+        const fastCommissionAmount = (totalCommission * fastCommissionPercentage) / 100;
+
+        const embed = new EmbedBuilder()
+            .setTitle('📋 New Commission Submission Completed')
+            .setColor(0x28A745)
+            .addFields(
+                { name: '🏢 Project', value: `${userData.project_name} - ${userData.unit_no}`, inline: true },
+                { name: '👤 Customer', value: userData.customer_name, inline: true },
+                { name: '💰 Total Commission', value: `RM${totalCommission.toFixed(2)}`, inline: true },
+                { name: '⚡ Fast Commission', value: `RM${fastCommissionAmount.toFixed(2)} (${fastCommissionPercentage}%)`, inline: true },
+                { name: '📝 Submission ID', value: submissionId, inline: true },
+                { name: '📅 Submitted', value: new Date().toLocaleString(), inline: true }
+            )
+            .setTimestamp();
+
+        if (userData.agents && userData.agents.length > 0) {
+            const agentDetails = userData.agents
+                .filter(agent => agent.name)
+                .map(agent => `**${agent.name}**: RM${agent.commission}`)
+                .join('\n');
+            embed.addFields({ name: '👥 Agent Commissions', value: agentDetails, inline: false });
+        }
+
+        // Add Google Drive file information
+        if (userData.uploadedFiles && userData.uploadedFiles.length > 0) {
+            const fileList = userData.uploadedFiles
+                .map(file => `📁 [${file.originalName}](${file.driveLink})`)
+                .join('\n');
+
+            embed.addFields({ 
+                name: `📂 Documents Uploaded to Google Drive (${userData.uploadedFiles.length})`, 
+                value: fileList.length > 1024 ? fileList.substring(0, 1020) + '...' : fileList, 
+                inline: false 
+            });
+        } else {
+            embed.addFields({ 
+                name: '📂 Documents', 
+                value: '⚠️ No files were transferred to Google Drive', 
+                inline: false 
+            });
+        }
+
+        await channel.send({
+            content: '🎉 **New Commission Submission!**',
+            embeds: [embed]
+        });
+
+        console.log('Notification sent to channel for submission:', submissionId);
+    } catch (error) {
+        console.error('Error sending notification:', error);
+    }
+}
 
 // Update checklist display
 async function updateChecklistDisplay(message, data, userId) {
