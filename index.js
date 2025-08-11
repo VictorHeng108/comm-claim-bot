@@ -3296,10 +3296,17 @@ async function createJotformUpload(data, sessionToken) {
         }
 
         console.log('Using webhook URL:', webhookUrl);
+        console.log('Platform details:', {
+            isReplit,
+            isRailway,
+            baseHost: BASE_HOST,
+            baseProtocol: BASE_PROTOCOL,
+            port: PORT
+        });
 
-        // Set webhook for the template form (one-time setup)
+        // ALWAYS update webhook for cross-platform compatibility
         try {
-            // First, delete any existing webhooks
+            // First, delete any existing webhooks to ensure clean state
             const existingWebhooksResponse = await fetch(`${JOTFORM_BASE_URL}/form/${JOTFORM_TEMPLATE_ID}/webhooks`, {
                 headers: {
                     'APIKEY': JOTFORM_API_KEY
@@ -3308,72 +3315,75 @@ async function createJotformUpload(data, sessionToken) {
 
             if (existingWebhooksResponse.ok) {
                 const existingWebhooks = await existingWebhooksResponse.json();
-                console.log('Existing webhooks:', existingWebhooks.content?.length || 0);
+                console.log('🔍 Checking existing webhooks:', existingWebhooks.content?.length || 0);
 
-                // Delete existing webhooks if any
+                // Check if current webhook URL already exists
+                let currentWebhookExists = false;
                 if (existingWebhooks.content && existingWebhooks.content.length > 0) {
                     for (const webhook of existingWebhooks.content) {
-                        try {
-                            const deleteResponse = await fetch(`${JOTFORM_BASE_URL}/form/${JOTFORM_TEMPLATE_ID}/webhooks/${webhook.id}`, {
-                                method: 'DELETE',
-                                headers: {
-                                    'APIKEY': JOTFORM_API_KEY
+                        console.log('🔗 Existing webhook URL:', webhook.webhookURL);
+                        if (webhook.webhookURL === webhookUrl) {
+                            currentWebhookExists = true;
+                            console.log('✅ Current webhook URL already registered');
+                        } else {
+                            // Delete outdated webhooks
+                            try {
+                                const deleteResponse = await fetch(`${JOTFORM_BASE_URL}/form/${JOTFORM_TEMPLATE_ID}/webhooks/${webhook.id}`, {
+                                    method: 'DELETE',
+                                    headers: {
+                                        'APIKEY': JOTFORM_API_KEY
+                                    }
+                                });
+
+                                if (deleteResponse.ok) {
+                                    console.log('🗑️ Deleted outdated webhook:', webhook.webhookURL);
+                                } else {
+                                    console.log('⚠️ Failed to delete webhook:', webhook.id);
                                 }
-                            });
 
-                            if (deleteResponse.ok) {
-                                console.log('🗑️ Deleted existing webhook:', webhook.id);
-                            } else {
-                                const deleteResult = await deleteResponse.json();
-                                console.log('Failed to delete webhook:', webhook.id, deleteResult);
+                                // Add delay between deletions
+                                await new Promise(resolve => setTimeout(resolve, 500));
+                            } catch (deleteError) {
+                                console.log('⚠️ Error deleting webhook:', webhook.id, deleteError.message);
                             }
-
-                            // Add delay between deletions
-                            await new Promise(resolve => setTimeout(resolve, 500));
-                        } catch (deleteError) {
-                            console.log('Failed to delete webhook:', webhook.id, deleteError.message);
                         }
                     }
 
-                    // Wait a bit after deletions before adding new webhook
+                    // Wait after deletions
                     await new Promise(resolve => setTimeout(resolve, 1000));
                 }
-            }
 
-            // Now set the new webhook
-            const webhookResponse = await fetch(`${JOTFORM_BASE_URL}/form/${JOTFORM_TEMPLATE_ID}/webhooks`, {
-                method: 'POST',
-                headers: {
-                    'APIKEY': JOTFORM_API_KEY,
-                    'Content-Type': 'application/x-www-form-urlencoded'
-                },
-                body: `webhookURL=${encodeURIComponent(webhookUrl)}`
-            });
+                // Add current webhook if it doesn't exist
+                if (!currentWebhookExists) {
+                    console.log('🔄 Setting up new webhook for current platform...');
+                    const webhookResponse = await fetch(`${JOTFORM_BASE_URL}/form/${JOTFORM_TEMPLATE_ID}/webhooks`, {
+                        method: 'POST',
+                        headers: {
+                            'APIKEY': JOTFORM_API_KEY,
+                            'Content-Type': 'application/x-www-form-urlencoded'
+                        },
+                        body: `webhookURL=${encodeURIComponent(webhookUrl)}`
+                    });
 
-            const webhookResult = await webhookResponse.json();
+                    const webhookResult = await webhookResponse.json();
 
-            if (webhookResponse.ok) {
-                console.log('✅ Webhook successfully set for Jotform:', webhookUrl);
-                console.log('✅ Webhook ID:', webhookResult.content);
-            } else {
-                // Check if webhook already exists (this is actually OK)
-                if (webhookResponse.status === 400 && webhookResult.message && webhookResult.message.includes('already in WebHooks List')) {
-                    console.log('✅ Webhook already exists for this form - this is fine!');
-                    console.log('🔗 Webhook URL:', webhookUrl);
-                } else {
-                    console.error('❌ Failed to set webhook:', webhookResponse.status, webhookResult);
-                    console.error('❌ Response body:', JSON.stringify(webhookResult, null, 2));
-
-                    // Check if it's a permission issue
-                    if (webhookResponse.status === 403) {
-                        console.error('❌ Permission denied. Check if your Jotform API key has webhook permissions.');
-                    } else if (webhookResponse.status === 400) {
-                        console.error('❌ Bad request. Check if webhook URL is valid and accessible.');
+                    if (webhookResponse.ok) {
+                        console.log('✅ Webhook successfully set for current platform:', webhookUrl);
+                        console.log('✅ Webhook ID:', webhookResult.content);
+                    } else {
+                        console.error('❌ Failed to set webhook:', webhookResponse.status, webhookResult);
+                        console.error('❌ Response body:', JSON.stringify(webhookResult, null, 2));
+                        console.error('❌ This may cause form submissions to not be processed!');
                     }
+                } else {
+                    console.log('✅ Webhook already configured for current platform');
                 }
+            } else {
+                console.error('❌ Failed to fetch existing webhooks:', existingWebhooksResponse.status);
             }
         } catch (webhookError) {
             console.error('❌ Webhook setup error:', webhookError.message);
+            console.error('❌ Form submissions may not work until webhook is properly configured!');
         }
 
         // Use prefilled form URL with unique session token embedded in project info for perfect matching
@@ -3856,13 +3866,51 @@ app.get('/debug/webhooks', async (req, res) => {
 
         res.json({
             templateFormId: JOTFORM_TEMPLATE_ID,
-            expectedWebhookUrl: process.env.WEBHOOK_URL,
+            expectedWebhookUrl: process.env.WEBHOOK_URL || 'Not set in environment',
+            constructedWebhookUrl: `${BASE_URL}/webhook/jotform`,
+            currentPlatform: {
+                isReplit,
+                isRailway,
+                baseHost: BASE_HOST,
+                baseProtocol: BASE_PROTOCOL,
+                port: PORT
+            },
             currentWebhooks: webhooks.content,
             status: response.ok ? 'OK' : 'ERROR'
         });
     } catch (error) {
         res.json({ error: error.message });
     }
+});
+
+// Test webhook endpoint
+app.get('/webhook/test', (req, res) => {
+    res.json({
+        message: 'Webhook endpoint is accessible',
+        timestamp: new Date().toISOString(),
+        platform: {
+            isReplit,
+            isRailway,
+            baseHost: BASE_HOST,
+            baseUrl: BASE_URL
+        },
+        receivedHeaders: req.headers
+    });
+});
+
+// Test webhook POST endpoint
+app.post('/webhook/test', (req, res) => {
+    console.log('Test webhook POST received:', {
+        body: req.body,
+        headers: req.headers,
+        timestamp: new Date().toISOString()
+    });
+    
+    res.json({
+        message: 'Test webhook POST successful',
+        timestamp: new Date().toISOString(),
+        receivedData: req.body
+    });
 });
 
 app.post('/webhook/jotform', async (req, res) => {
