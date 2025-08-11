@@ -548,7 +548,7 @@ function createConfirmationEmbed(data) {
             value: `${fastCommissionDetails}\n\n`, 
             inline: false 
         });
-        
+
         const formattedFastCommissionAmount = fastCommissionAmount.toLocaleString('en-US', {
             minimumFractionDigits: 2,
             maximumFractionDigits: 2
@@ -579,7 +579,7 @@ client.once('ready', async () => {
     for (let attempt = 1; attempt <= 2; attempt++) {
         const globalCommands = await client.application.commands.fetch();
         console.log(`🔍 Attempt ${attempt}: Found ${globalCommands.size} global commands`);
-        
+
         for (const command of globalCommands.values()) {
             try {
                 await client.application.commands.delete(command.id);
@@ -588,7 +588,7 @@ client.once('ready', async () => {
                 console.log(`⚠️ Failed to delete ${command.name}:`, error.message);
             }
         }
-        
+
         // Wait between attempts
         await new Promise(resolve => setTimeout(resolve, 2000));
     }
@@ -712,11 +712,26 @@ client.once('ready', async () => {
     console.log('  - admin-action: HIDDEN from regular users, only visible in admin guild');
 
     // Start express server
-    const port = process.env.PORT || 5000;
-    app.listen(port, '0.0.0.0', () => {
-        console.log(`Express server running on port ${port}`);
-        console.log(`Webhook test URL: https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.repl.co/webhook/test`);
-        console.log(`Webhook URL: https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.repl.co/webhook/jotform`);
+    const PORT = process.env.PORT || 5000;
+    app.listen(PORT, '0.0.0.0', () => {
+        // Universal host detection with PUBLIC_URL priority
+        let serverUrl = '';
+        if (process.env.PUBLIC_URL) {
+            serverUrl = `https://${process.env.PUBLIC_URL}`;
+        } else if (process.env.REPL_SLUG && process.env.REPL_OWNER) {
+            serverUrl = `https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.repl.co`;
+        } else if (process.env.VERCEL_URL) {
+            serverUrl = `https://${process.env.VERCEL_URL}`;
+        } else if (process.env.RAILWAY_PUBLIC_DOMAIN) {
+            serverUrl = `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`;
+        } else if (process.env.RENDER_EXTERNAL_URL) {
+            serverUrl = process.env.RENDER_EXTERNAL_URL;
+        } else {
+            serverUrl = `http://localhost:${PORT}`;
+        }
+        console.log(`Express server running on port ${PORT}`);
+        console.log(`Webhook test URL: ${serverUrl}/webhook/test`);
+        console.log(`Webhook URL: ${serverUrl}/webhook/jotform`);
     });
 });
 
@@ -1867,7 +1882,7 @@ client.on('interactionCreate', async interaction => {
             // Mark data as confirmed but DON'T save to GitHub backup yet
             // Only save after successful document upload
             data.dataConfirmed = true;
-            data.status = 'awaiting_form_completion';
+            data.status = 'authenticated'; // Changed status to authenticated
             data.sessionToken = sessionToken;
             data.userId = userId; // Store user ID in data
             data.username = interaction.user.username; // Store username for later use
@@ -2022,11 +2037,7 @@ client.on('interactionCreate', async interaction => {
                             new ButtonBuilder()
                                 .setCustomId('view_preserved_data')
                                 .setLabel('👁️ View My Data')
-                                .setStyle(ButtonStyle.Secondary),
-                            new ButtonBuilder()
-                                .setCustomId('cancel_submission')
-                                .setLabel('❌ Cancel')
-                                .setStyle(ButtonStyle.Danger)
+                                .setStyle(ButtonStyle.Secondary)
                         );
 
                     await interaction.editReply({
@@ -3242,12 +3253,22 @@ async function createJotformUpload(data, sessionToken) {
         let webhookUrl = process.env.WEBHOOK_URL;
 
         if (!webhookUrl) {
-            // Construct webhook URL from Replit environment
+            // Construct webhook URL from platform-specific environment variables
             if (process.env.REPL_SLUG && process.env.REPL_OWNER) {
                 webhookUrl = `https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.repl.co/webhook/jotform`;
-                console.log('Constructed webhook URL:', webhookUrl);
+                console.log('Constructed Replit webhook URL:', webhookUrl);
+            } else if (process.env.VERCEL_URL) {
+                webhookUrl = `https://${process.env.VERCEL_URL}/webhook/jotform`;
+                console.log('Constructed Vercel webhook URL:', webhookUrl);
+            } else if (process.env.RAILWAY_PUBLIC_DOMAIN) {
+                webhookUrl = `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/webhook/jotform`;
+                console.log('Constructed Railway webhook URL:', webhookUrl);
+            } else if (process.env.RENDER_EXTERNAL_URL) {
+                const renderUrl = process.env.RENDER_EXTERNAL_URL.replace(/\/$/, ''); // Remove trailing slash
+                webhookUrl = `${renderUrl}/webhook/jotform`;
+                console.log('Constructed Render webhook URL:', webhookUrl);
             } else {
-                throw new Error('WEBHOOK_URL environment variable is required or REPL_SLUG/REPL_OWNER not available');
+                throw new Error('WEBHOOK_URL environment variable is required. Please set it to your public domain with /webhook/jotform endpoint');
             }
         }
 
@@ -4079,7 +4100,7 @@ async function transferJotformFilesToGoogleDrive(submissionId, userData) {
 
                             // Save temporarily with unique path to avoid conflicts
                             const tempPath = `uploads/temp_${uniqueId}_${cleanFilename}`;
-                            
+
                             // Write file with binary flag to preserve integrity
                             await fs.writeFile(tempPath, fileBuffer, { encoding: null });
 
