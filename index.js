@@ -596,7 +596,7 @@ function createConfirmationEmbed(data) {
             value: `${fastCommissionDetails}\n\n`, 
             inline: false 
         });
-        
+
         const formattedFastCommissionAmount = fastCommissionAmount.toLocaleString('en-US', {
             minimumFractionDigits: 2,
             maximumFractionDigits: 2
@@ -627,7 +627,7 @@ client.once('ready', async () => {
     for (let attempt = 1; attempt <= 2; attempt++) {
         const globalCommands = await client.application.commands.fetch();
         console.log(`🔍 Attempt ${attempt}: Found ${globalCommands.size} global commands`);
-        
+
         for (const command of globalCommands.values()) {
             try {
                 await client.application.commands.delete(command.id);
@@ -636,7 +636,7 @@ client.once('ready', async () => {
                 console.log(`⚠️ Failed to delete ${command.name}:`, error.message);
             }
         }
-        
+
         // Wait between attempts
         await new Promise(resolve => setTimeout(resolve, 2000));
     }
@@ -1237,84 +1237,6 @@ client.on('interactionCreate', async interaction => {
                                 .setStyle(ButtonStyle.Danger),
                             new ButtonBuilder()
                                 .setCustomId('cancel_delete')
-
-// Upload file stream directly to company Google Drive (no local storage)
-async function uploadStreamToCompanyGoogleDrive(fileStream, fileName, mimeType, userData = null) {
-    try {
-        // Use your existing OAuth config
-        if (!oauth_config) {
-            throw new Error('Google OAuth not configured. Check GOOGLE_OAUTH_SECRETS environment variable.');
-        }
-
-        // Create OAuth client with your credentials
-        const oauth_client = new google.auth.OAuth2(
-            oauth_config.web.client_id,
-            oauth_config.web.client_secret,
-            oauth_config.web.redirect_uris[0]
-        );
-
-        // Set credentials
-        const accessToken = process.env.COMPANY_DRIVE_ACCESS_TOKEN;
-        const refreshToken = process.env.COMPANY_DRIVE_REFRESH_TOKEN;
-
-        if (!accessToken || !refreshToken) {
-            throw new Error('Please set COMPANY_DRIVE_ACCESS_TOKEN and COMPANY_DRIVE_REFRESH_TOKEN in Secrets.');
-        }
-
-        oauth_client.setCredentials({ 
-            access_token: accessToken,
-            refresh_token: refreshToken
-        });
-
-        const companyDrive = google.drive({ version: 'v3', auth: oauth_client });
-
-        // Create organized folder structure: Discord Uploads > Agent Claim Request > [Date - Username]
-        const discordUploadsFolder = await createOrGetCompanyFolder(companyDrive, 'Discord Uploads');
-        const agentClaimFolder = await createOrGetCompanySubFolder(companyDrive, 'Agent Claim Request', discordUploadsFolder);
-
-        // Create unique folder for this submission if userData is provided
-        let targetFolderId = agentClaimFolder;
-        if (userData && userData.username) {
-            const sessionToken = userData.sessionToken || 'no_token';
-            const cacheKey = `${userData.userId}_${userData.project_name}_${userData.unit_no}_${sessionToken}`;
-
-            if (userFolderCache.has(cacheKey)) {
-                targetFolderId = userFolderCache.get(cacheKey);
-            } else {
-                const today = new Date().toISOString().split('T')[0];
-                const projectName = userData.project_name?.replace(/[^a-zA-Z0-9]/g, '_') || 'Project';
-                const unitNo = userData.unit_no?.replace(/[^a-zA-Z0-9]/g, '_') || 'Unit';
-                const userFolderName = `${today} - ${userData.username} - ${projectName} - ${unitNo}`;
-                targetFolderId = await createOrGetCompanySubFolder(companyDrive, userFolderName, agentClaimFolder);
-                userFolderCache.set(cacheKey, targetFolderId);
-            }
-        }
-
-        const fileMetadata = {
-            name: fileName,
-            parents: [targetFolderId]
-        };
-
-        const media = {
-            mimeType: mimeType,
-            body: fileStream
-        };
-
-        const response = await companyDrive.files.create({
-            resource: fileMetadata,
-            media: media,
-            fields: 'id, name, webViewLink'
-        });
-
-        console.log('✅ File streamed to company Google Drive:', response.data.name);
-        return response.data;
-    } catch (error) {
-        console.error('❌ Error streaming to company Google Drive:', error);
-        throw error;
-    }
-}
-
-
                                 .setLabel('❌ Cancel')
                                 .setStyle(ButtonStyle.Secondary)
                         );
@@ -1326,10 +1248,8 @@ async function uploadStreamToCompanyGoogleDrive(fileStream, fileName, mimeType, 
                     });
                 }
 
-
-
             } catch (error) {
-                console.error('Error in amend-submission command:', error);
+                console.error('Error in admin-action command:', error);
                 await interaction.reply({
                     content: '❌ Error processing amendment command.',
                     ephemeral: true
@@ -1819,7 +1739,7 @@ async function uploadStreamToCompanyGoogleDrive(fileStream, fileName, mimeType, 
 
         else if (interaction.customId === 'file_upload_form') {
             await interaction.reply({
-                content: '📎 **Ready for File Upload!**\n\n**Now attach your commission documents to your next message.**\n\nYou can attach multiple files (PDF, DOC, DOCX, JPG, PNG) by:\n• Click the paperclip (📎) icon\n• Select "Upload a File"\n• Choose your documents\n• Send the message\n\nI\'ll process your files automatically!',
+                content: '📎 **Ready for File Upload!**\n\n**Now attach your commission documents to your next message.**\n\nSupported formats: PDF, DOC, DOCX, JPG, PNG\n\nI\'ll process your files automatically!',
                 ephemeral: true
             });
 
@@ -2420,461 +2340,6 @@ async function uploadStreamToCompanyGoogleDrive(fileStream, fileName, mimeType, 
                 embeds: [embed],
                 components: [confirmRow]
             });
-        }
-
-        else if (interaction.customId === 'proceed_with_files') {
-            const data = submissions.get(userId);
-
-            await interaction.update({
-                content: '🎉 **Submission Complete!**\n\nThank you for your commission submission. Your documents have been uploaded and your data has been saved.\n\n✅ **Status:** Complete\n📁 **Documents:** Successfully uploaded',
-                components: []
-            });
-
-            // Clean up
-            submissions.delete(userId);
-        }
-
-        else if (interaction.customId === 'cancel_files') {
-            const data = submissions.get(userId);
-
-            await interaction.update({
-                content: '❌ **File upload cancelled.**\n\nYou can restart the submission process with `/fast-comm-submission` if needed.',
-                components: []
-            });
-
-            // Clean up
-            submissions.delete(userId);
-        }
-
-        else if (interaction.customId === 'cancel_submission') {
-            submissions.delete(userId);
-            await interaction.update({
-                content: '❌ Submission cancelled.',
-                embeds: [],
-                components: []
-            });
-        }
-
-        else if (interaction.customId.startsWith('confirm_delete_')) {
-
-            try {
-                const index = parseInt(interaction.customId.split('_')[2]);
-                const backupData = await loadBackupFromGitHub();
-
-                if (index < 0 || index >= backupData.length) {                    await interaction.update({
-                        content: '❌ Invalid submission index.',
-                        components: []
-                    });
-                    return;
-                }
-
-                const deletedSubmission = backupData[index];
-                backupData.splice(index, 1);
-                await saveBackupToGitHub(backupData);
-
-                await interaction.update({
-                    content: `✅ **Submission Deleted Successfully**\n\n**Project:** ${deletedSubmission.project_name}\n**User:** ${deletedSubmission.username}\n**Previous Index:** ${index}\n\nBackup updated in GitHub.`,
-                    components: []
-                });
-
-            } catch (error) {
-                console.error('Error deleting submission:', error);
-                await interaction.update({
-                    content: '❌ Error deleting submission from GitHub backup.',
-                    components: []
-                });
-            }
-        }
-
-        else if (interaction.customId.startsWith('confirm_bulk_delete_')) {
-
-            try {
-                const indicesString = interaction.customId.replace('confirm_bulk_delete_', '');
-                const indices = indicesString.split(',').map(str => parseInt(str.trim())).sort((a, b) => b - a);
-                const backupData = await loadBackupFromGitHub();
-
-                // Validate indices again
-                const invalidIndices = indices.filter(idx => idx < 0 || idx >= backupData.length);
-                if (invalidIndices.length > 0) {
-                    await interaction.update({
-                        content: `❌ Some indices are now invalid: ${invalidIndices.join(', ')}\n\nPlease try again with valid indices.`,
-                        components: []
-                    });
-                    return;
-                }
-
-                // Delete submissions (from highest index to lowest to avoid index shifting)
-                const deletedSubmissions = [];
-                for (const index of indices) {
-                    deletedSubmissions.push({
-                        index: index,
-                        project: backupData[index].project_name,
-                        user: backupData[index].username
-                    });
-                    backupData.splice(index, 1);
-                }
-
-                await saveBackupToGitHub(backupData);
-
-                const deletedList = deletedSubmissions
-                    .map(item => `• Index ${item.index}: ${item.project} - ${item.user}`)
-                    .join('\n');
-
-                await interaction.update({
-                    content: `✅ **Bulk Deletion Successful**\n\n**Deleted ${deletedSubmissions.length} submission(s):**\n\n${deletedList}\n\nBackup updated in GitHub.`,
-                    components: []
-                });
-
-            } catch (error) {
-                console.error('Error bulk deleting submissions:', error);
-                await interaction.update({
-                    content: '❌ Error bulk deleting submissions from GitHub backup.',
-                    components: []
-                });
-            }
-        }
-
-        else if (interaction.customId === 'cancel_delete') {
-            await interaction.update({
-                content: '❌ Deletion cancelled.',
-                components: []
-            });
-        }
-
-
-
-        else if (interaction.customId === 'upload_booking_form') {
-            await interaction.reply({
-                content: '📝 **Ready to upload Booking Form!**\n\n**Now attach your Booking Form documents to your next message.**\n\nSupported formats: PDF, DOC, DOCX, JPG, PNG\n\nI\'ll process your files automatically and update the checklist!',
-                ephemeral: true
-            });
-
-            // Set user state to expect specific document upload
-            const data = submissions.get(userId);
-            submissions.set(userId, { ...data, status: 'awaiting_booking_form' });
-        }
-
-        else if (interaction.customId === 'upload_spa') {
-            await interaction.reply({
-                content: '📄 **Ready to upload SPA Document!**\n\n**Now attach your SPA documents to your next message.**\n\nSupported formats: PDF, DOC, DOCX, JPG, PNG\n\nI\'ll process your files automatically and update the checklist!',
-                ephemeral: true
-            });
-
-            // Set user state to expect specific document upload
-            const data = submissions.get(userId);
-            submissions.set(userId, { ...data, status: 'awaiting_spa' });
-        }
-
-        else if (interaction.customId === 'upload_la') {
-            await interaction.reply({
-                content: '📑 **Ready to upload LA Document!**\n\n**Now attach your LA documents to your next message.**\n\nSupported formats: PDF, DOC, DOCX, JPG, PNG\n\nI\'ll process your files automatically and update the checklist!',
-                ephemeral: true
-            });
-
-            // Set user state to expect specific document upload
-            const data = submissions.get(userId);
-            submissions.set(userId, { ...data, status: 'awaiting_la' });
-        }
-
-        else if (interaction.customId === 'check_upload_status') {
-            const data = submissions.get(userId);
-
-            if (!data || !data.jotform) {
-                await interaction.reply({
-                    content: '❌ No form data found. Please restart the submission process.',
-                    ephemeral: true
-                });
-                return;
-            }
-
-            // Prevent multiple simultaneous status checks
-            const statusCheckKey = `status_check_${userId}`;
-            if (processingConfirmations.has(statusCheckKey)) {
-                await interaction.reply({
-                    content: '⏳ Status check already in progress. Please wait...',
-                    ephemeral: true
-                });
-                return;
-            }
-
-            // Mark status check as in progress
-            processingConfirmations.set(statusCheckKey, true);
-
-            try {
-                await interaction.deferUpdate();
-
-                // Check if already completed via webhook for THIS specific user AND has actual files
-                if (data.status === 'completed' && data.jotformSubmissionId && data.uploadedFiles && data.uploadedFiles.length > 0) {
-                    await interaction.followUp({
-                        content: `🎉 **Commission Submission Complete!**\n\nCongratulations! Your claim submission is under review. Please be patient, we have notified our admin to proceed with your application.\n\n✅ **Status:** Complete\n📁 **Documents:** Successfully uploaded\n📋 **Notification:** Sent to admin channel\n\n📄 **Files Uploaded:** ${data.uploadedFiles.length} document(s)`,
-                        ephemeral: true
-                    });
-                    submissions.delete(userId);
-                    return;
-                }
-
-                // Check if user already has files uploaded (prevent duplicate processing)
-                if (data.uploadedFiles && data.uploadedFiles.length > 0) {
-                    await interaction.editReply({
-                        content: `🎉 **Commission Submission Complete!**\n\nCongratulations! Your claim submission is under review. Please be patient, we have notified our admin to proceed with your application.\n\n✅ **Status:** Complete\n📁 **Documents:** Successfully uploaded\n📋 **Notification:** Sent to admin channel\n\n📄 **Files Uploaded:** ${data.uploadedFiles.length} document(s)`,
-                        embeds: [],
-                        components: []
-                    });
-                    data.status = 'completed';
-                    submissions.set(userId, data);
-                    processingConfirmations.delete(statusCheckKey);
-                    return;
-                }
-
-                // Check if this specific submission was already processed via webhook
-                if (data.jotformSubmissionId && processedSubmissions.has(data.jotformSubmissionId)) {
-                    console.log('Submission already processed globally:', data.jotformSubmissionId);
-                    await interaction.editReply({
-                        content: `🎉 **Commission Submission Complete!**\n\nCongratulations! Your claim submission is already processed.\n\n✅ **Status:** Complete\n📁 **Documents:** Already uploaded\n📋 **Notification:** Already sent`,
-                        embeds: [],
-                        components: []
-                    });
-                    data.status = 'completed';
-                    submissions.set(userId, data);
-                    processingConfirmations.delete(statusCheckKey);
-                    return;
-                }
-
-                // Check for submissions with matching session token (perfect matching)
-                const hasNewSubmissions = await checkForTokenBasedJotformSubmissions(data.jotform.formId, data);
-
-                if (hasNewSubmissions) {
-                    // Show progress bar first
-                    const progressEmbed = new EmbedBuilder()
-                        .setTitle('⏳ Processing Your Documents')
-                        .setColor(0xFF6600)
-                        .setDescription('Your files are being transferred to server...')
-                        .addFields(
-                            { name: '📁 Status', value: '🔄 Downloading from Jotform...', inline: false },
-                            { name: '🎯 Project', value: `${data.project_name} - ${data.unit_no}`, inline: false },
-                            { name: '📄 Submission ID', value: hasNewSubmissions.submissionId, inline: false }
-                        )
-                        .setFooter({ text: 'Please wait while we process your documents' });
-
-                    await interaction.editReply({
-                        content: '📤 **File Upload in Progress...**',
-                        embeds: [progressEmbed],
-                        components: []
-                    });
-
-                    // Check if this submission was already processed by this user
-                    if (data.jotformSubmissionId === hasNewSubmissions.submissionId && data.uploadedFiles && data.uploadedFiles.length > 0) {
-                        await interaction.editReply({
-                            content: `🎉 **Commission Submission Complete!**\n\nCongratulations! Your claim submission is under review. Please be patient, we have notified our admin to proceed with your application.\n\n✅ **Status:** Complete\n📁 **Documents:** Successfully uploaded\n📋 **Notification:** Sent to admin channel\n\n📄 **Files Uploaded:** ${data.uploadedFiles.length} document(s)`,
-                            embeds: [],
-                            components: []
-                        });
-                        processingConfirmations.delete(statusCheckKey);
-                        return;
-                    }
-
-                    // Check if this submission ID was already processed globally (prevent duplicate processing)
-                    if (processedSubmissions.has(hasNewSubmissions.submissionId)) {
-                        console.log('Submission already processed globally:', hasNewSubmissions.submissionId);
-                        await interaction.editReply({
-                            content: `🎉 **Commission Submission Complete!**\n\nCongratulations! Your claim submission is already processed.\n\n✅ **Status:** Complete\n📁 **Documents:** Already uploaded\n📋 **Notification:** Already sent`,
-                            embeds: [],
-                            components: []
-                        });
-                        processingConfirmations.delete(statusCheckKey);
-                        return;
-                    }
-
-                    // Process the completion with REAL submission ID and update progress
-                    try {
-                        // Update progress: Starting transfer
-                        progressEmbed.setFields(
-                            { name: '📁 Status', value: '📤 Uploading to server...', inline: false },
-                            { name: '🎯 Project', value: `${data.project_name} - ${data.unit_no}`, inline: false },
-                            { name: '📄 Submission ID', value: hasNewSubmissions.submissionId, inline: false }
-                        );
-
-                        await interaction.editReply({
-                            content: '📤 **File Upload in Progress...**',
-                            embeds: [progressEmbed],
-                            components: []
-                        });
-
-                        const uploadedFiles = await transferJotformFilesToGoogleDrive(hasNewSubmissions.submissionId, data);
-
-                        // Only proceed if files were actually uploaded
-                        if (uploadedFiles && uploadedFiles.length > 0) {
-                            // Update progress: Saving to backup
-                            progressEmbed.setFields(
-                                { name: '📁 Status', value: '💾 Saving to backup...', inline: false },
-                                { name: '🎯 Project', value: `${data.project_name} - ${data.unit_no}`, inline: false },
-                                { name: '📄 Files Transferred', value: `${uploadedFiles.length} document(s)`, inline: false }
-                            );
-
-                            await interaction.editReply({
-                                content: '💾 **Finalizing Upload...**',
-                                embeds: [progressEmbed],
-                                components: []
-                            });
-
-                            data.uploadedFiles = uploadedFiles;
-                            data.jotformSubmissionId = hasNewSubmissions.submissionId;
-
-                            // NOW save to GitHub backup (only after successful file upload)
-                            const backupData = await loadBackupFromGitHub();
-                            const submissionData = {
-                                ...data,
-                                user_id: userId,
-                                username: data.username || 'Unknown User',
-                                submitted_at: getGMT8Date().toISOString(),
-                                uploadedFiles: uploadedFiles
-                            };
-                            backupData.push(submissionData);
-                            await saveBackupToGitHub(backupData);
-
-                            // Update progress: Sending notifications
-                            progressEmbed.setFields(
-                                { name: '📁 Status', value: '📨 Sending notifications...', inline: false },
-                                { name: '🎯 Project', value: `${data.project_name} - ${data.unit_no}`, inline: false },
-                                { name: '📄 Files Transferred', value: `${uploadedFiles.length} document(s)`, inline: false }
-                            );
-
-                            await interaction.editReply({
-                                content: '📨 **Sending Notifications...**',
-                                embeds: [progressEmbed],
-                                components: []
-                            });
-
-                            // Send notification to channel
-                            await sendSubmissionNotification(data, hasNewSubmissions.submissionId);
-                            data.status = 'completed';
-                            submissions.set(userId, data);
-
-                            // Final completion message
-                            await interaction.editReply({
-                                content: `🎉 **Commission Submission Complete!**\n\nCongratulations! Your claim submission is under review. Please be patient, we have notified our admin to proceed with your application.\n\n✅ **Status:** Complete\n📁 **Documents:** Successfully uploaded\n📋 **Notification:** Sent to admin channel\n\n📄 **Files Uploaded:** ${uploadedFiles.length} document(s)`,
-                                embeds: [],
-                                components: []
-                            });
-
-                            // Clean up
-                            submissions.delete(userId);
-                            processingConfirmations.delete(statusCheckKey);
-                            return;
-                        } else {
-                            // Files failed to upload
-                            await interaction.editReply({
-                                content: '❌ **File Upload Failed**\n\nDocuments were submitted to Jotform but failed to transfer to server. Please try again or contact support.',
-                                embeds: [],
-                                components: []
-                            });
-                            processingConfirmations.delete(statusCheckKey);
-                            return;
-                        }
-                    } catch (uploadError) {
-                        console.error('Error during upload processing:', uploadError);
-
-                        const errorEmbed = new EmbedBuilder()
-                            .setTitle('❌ Upload Processing Failed')
-                            .setColor(0xFF0000)
-                            .setDescription('There was an error processing your documents.')
-                            .addFields(
-                                { name: '🔍 Error Details', value: uploadError.message || 'Unknown error occurred', inline: false },
-                                { name: '🔄 What to do next', value: 'Please try checking status again or contact support', inline: false }
-                            );
-
-                        const retryRow = new ActionRowBuilder()
-                            .addComponents(
-                                new ButtonBuilder()
-                                    .setCustomId('check_upload_status')
-                                    .setLabel('🔄 Try Again')
-                                    .setStyle(ButtonStyle.Primary),
-                                new ButtonBuilder()
-                                    .setCustomId('back_to_form_view')
-                                    .setLabel('← Back to Form')
-                                    .setStyle(ButtonStyle.Secondary)
-                            );
-
-                        await interaction.editReply({
-                            content: '❌ **Upload Processing Error**',
-                            embeds: [errorEmbed],
-                            components: [retryRow]
-                        });
-                        processingConfirmations.delete(statusCheckKey);
-                        return;
-                    }
-                } else {
-                    const backRow = new ActionRowBuilder()
-                        .addComponents(
-                            new ButtonBuilder()
-                                .setCustomId('check_upload_status')
-                                .setLabel('🔄 Check Again (Auto-refresh in 30s)')
-                                .setStyle(ButtonStyle.Primary),
-                            new ButtonBuilder()
-                                .setLabel('📝 Upload Documents')
-                                .setStyle(ButtonStyle.Link)
-                                .setURL(data.jotform.formUrl),
-                            new ButtonBuilder()
-                                .setCustomId('back_to_form_view')
-                                .setLabel('← Back to Form Info')
-                                .setStyle(ButtonStyle.Secondary)
-                        );
-
-                    await interaction.editReply({
-                        content: '⏳ **No form submission detected yet**\n\nPlease complete the Jotform first, then check status again.\n\n📝 If you haven\'t submitted the form yet, click the "Upload Documents" button below.\n\n🔔 **Note:** The system will auto-check every 30 seconds, or you can manually check again.',
-                        embeds: [],
-                        components: [backRow]
-                    });
-
-                                        // Auto-refresh after 30 seconds
-                    setTimeout(async () => {
-                        try {
-                            const laterData = submissions.get(userId);
-                            if (laterData && laterData.status === 'awaiting_form_completion') {
-                                const hasSubmissions = await checkForTokenBasedJotformSubmissions(laterData.jotform.formId, laterData);
-                                if (hasSubmissions) {
-                                    // Process completion automatically
-                                    const uploadedFiles = await transferJotformFilesToGoogleDrive(hasSubmissions.submissionId, laterData);
-
-                                    if (uploadedFiles && uploadedFiles.length > 0) {
-                                        laterData.uploadedFiles = uploadedFiles;
-                                        laterData.jotformSubmissionId = hasSubmissions.submissionId;
-
-                                        // Save to GitHub backup
-                                        const backupData = await loadBackupFromGitHub();
-                                        const submissionData = {
-                                            ...laterData,
-                                            user_id: userId,
-                                            username: laterData.username || 'Unknown User',
-                                            submitted_at: getGMT8Date().toISOString(),
-                                            uploadedFiles: uploadedFiles
-                                        };
-                                        backupData.push(submissionData);
-                                        await saveBackupToGitHub(backupData);
-
-                                        await sendSubmissionNotification(laterData, hasSubmissions.submissionId);
-                                        laterData.status = 'completed';
-                                        submissions.set(userId, laterData);
-
-                                        console.log('Auto-processed submission for user:', userId);
-                                    }
-                                }
-                            }
-                        } catch (autoError) {
-                            console.error('Auto-check error:', autoError);
-                        }
-                    }, 30000);
-                }
-            } catch (error) {
-                console.error('Error checking form status:', error);
-                await interaction.followUp({
-                    content: '❌ Error checking form status. Please try again.',
-                    ephemeral: true
-                });
-            } finally {
-                // Always clean up status check processing state
-                processingConfirmations.delete(statusCheckKey);
-            }
         }
 
         else if (interaction.customId === 'complete_submission') {
@@ -3983,7 +3448,7 @@ app.post('/webhook/test', (req, res) => {
         headers: req.headers,
         timestamp: new Date().toISOString()
     });
-    
+
     res.json({
         message: 'Test webhook POST successful',
         timestamp: new Date().toISOString(),
@@ -4220,7 +3685,7 @@ async function transferJotformFilesToGoogleDrive(submissionId, userData) {
 
                             // Stream file directly from Jotform to Google Drive without local storage
                             const fileStream = fileResponse.body;
-                            
+
                             if (!fileStream) {
                                 console.error('No file stream available:', fileUrl);
                                 continue;
