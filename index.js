@@ -52,13 +52,61 @@ let drive, octokit;
 const app = express();
 const upload = multer({ dest: 'uploads/' });
 
+// ---- Platform-aware URL + server config ----
+const osEnv = process.env;
+
+// Detect platform
+const isRailway = !!osEnv.RAILWAY_ENVIRONMENT;
+const isReplit  = !!osEnv.REPL_ID;
+
+// Port & host binding (works everywhere)
+const PORT = Number(osEnv.PORT || 5000);
+const HOST = '0.0.0.0';
+
+// Compute a public base URL in this order:
+// 1) PUBLIC_URL (set it on Railway and on Replit if you want)
+// 2) Replit's injected vars -> https://${REPL_SLUG}.${REPL_OWNER}.repl.co
+// 3) Railway known pattern (hardcoded fallback if you really want; better to use PUBLIC_URL)
+// 4) Localhost (dev)
+function getBaseUrl() {
+  if (osEnv.PUBLIC_URL) return stripProtocol(osEnv.PUBLIC_URL);
+
+  if (isReplit && osEnv.REPL_SLUG && osEnv.REPL_OWNER) {
+    return `${osEnv.REPL_SLUG}.${osEnv.REPL_OWNER}.repl.co`;
+  }
+
+  // Optional: if you know your Railway subdomain, you can leave this blank and just set PUBLIC_URL instead.
+  if (isRailway && osEnv.RAILWAY_SUBDOMAIN) {
+    // set RAILWAY_SUBDOMAIN yourself if you want this path
+    return `${osEnv.RAILWAY_SUBDOMAIN}.up.railway.app`;
+  }
+
+  return `localhost:${PORT}`;
+}
+
+function stripProtocol(url) {
+  return url.replace(/^https?:\/\//i, '');
+}
+
+const BASE_HOST = getBaseUrl();
+// Use https for hosted envs, http for localhost
+const BASE_PROTOCOL = BASE_HOST.startsWith('localhost') ? 'http' : 'https';
+const BASE_URL = `${BASE_PROTOCOL}://${BASE_HOST}`;
+
+// Express behind proxies (Replit/Railway are behind proxies)
+app.set('trust proxy', 1);
+
+// Session cookie: secure only in production/hosted
+const isHosted = !BASE_HOST.startsWith('localhost');
+const SESSION_COOKIE_SECURE = isHosted;
+
 // Session configuration
 app.use(session({
     secret: process.env.SESSION_SECRET || 'your-secret-key',
     resave: false,
     saveUninitialized: false,
     cookie: { 
-        secure: false, // Set to true in production with HTTPS
+        secure: SESSION_COOKIE_SECURE, // Automatically secure in production
         maxAge: 24 * 60 * 60 * 1000 // 24 hours
     }
 }));
@@ -711,12 +759,12 @@ client.once('ready', async () => {
     console.log('  - check-my-upload: VISIBLE to all users globally'); 
     console.log('  - admin-action: HIDDEN from regular users, only visible in admin guild');
 
-    // Start express server
-    const port = process.env.PORT || 5000;
-    app.listen(port, '0.0.0.0', () => {
-        console.log(`Express server running on port ${port}`);
-        console.log(`Webhook test URL: https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.repl.co/webhook/test`);
-        console.log(`Webhook URL: https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.repl.co/webhook/jotform`);
+    // Start express server using platform-aware configuration
+    app.listen(PORT, HOST, () => {
+        console.log(`Express server running on ${BASE_PROTOCOL}://${BASE_HOST}`);
+        console.log(`Platform detected: ${isReplit ? 'Replit' : isRailway ? 'Railway' : 'Local/Other'}`);
+        console.log(`Webhook test URL: ${BASE_URL}/webhook/test`);
+        console.log(`Webhook URL: ${BASE_URL}/webhook/jotform`);
     });
 });
 
@@ -3238,17 +3286,13 @@ async function createJotformUpload(data, sessionToken) {
             throw new Error('JOTFORM_TEMPLATE_ID not configured');
         }
 
-        // Get webhook URL from environment variable or construct from Replit
+        // Get webhook URL from environment variable or construct using platform-aware config
         let webhookUrl = process.env.WEBHOOK_URL;
 
         if (!webhookUrl) {
-            // Construct webhook URL from Replit environment
-            if (process.env.REPL_SLUG && process.env.REPL_OWNER) {
-                webhookUrl = `https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.repl.co/webhook/jotform`;
-                console.log('Constructed webhook URL:', webhookUrl);
-            } else {
-                throw new Error('WEBHOOK_URL environment variable is required or REPL_SLUG/REPL_OWNER not available');
-            }
+            // Use the platform-aware BASE_URL
+            webhookUrl = `${BASE_URL}/webhook/jotform`;
+            console.log('Constructed webhook URL using platform-aware config:', webhookUrl);
         }
 
         console.log('Using webhook URL:', webhookUrl);
