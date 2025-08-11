@@ -1237,6 +1237,84 @@ client.on('interactionCreate', async interaction => {
                                 .setStyle(ButtonStyle.Danger),
                             new ButtonBuilder()
                                 .setCustomId('cancel_delete')
+
+// Upload file stream directly to company Google Drive (no local storage)
+async function uploadStreamToCompanyGoogleDrive(fileStream, fileName, mimeType, userData = null) {
+    try {
+        // Use your existing OAuth config
+        if (!oauth_config) {
+            throw new Error('Google OAuth not configured. Check GOOGLE_OAUTH_SECRETS environment variable.');
+        }
+
+        // Create OAuth client with your credentials
+        const oauth_client = new google.auth.OAuth2(
+            oauth_config.web.client_id,
+            oauth_config.web.client_secret,
+            oauth_config.web.redirect_uris[0]
+        );
+
+        // Set credentials
+        const accessToken = process.env.COMPANY_DRIVE_ACCESS_TOKEN;
+        const refreshToken = process.env.COMPANY_DRIVE_REFRESH_TOKEN;
+
+        if (!accessToken || !refreshToken) {
+            throw new Error('Please set COMPANY_DRIVE_ACCESS_TOKEN and COMPANY_DRIVE_REFRESH_TOKEN in Secrets.');
+        }
+
+        oauth_client.setCredentials({ 
+            access_token: accessToken,
+            refresh_token: refreshToken
+        });
+
+        const companyDrive = google.drive({ version: 'v3', auth: oauth_client });
+
+        // Create organized folder structure: Discord Uploads > Agent Claim Request > [Date - Username]
+        const discordUploadsFolder = await createOrGetCompanyFolder(companyDrive, 'Discord Uploads');
+        const agentClaimFolder = await createOrGetCompanySubFolder(companyDrive, 'Agent Claim Request', discordUploadsFolder);
+
+        // Create unique folder for this submission if userData is provided
+        let targetFolderId = agentClaimFolder;
+        if (userData && userData.username) {
+            const sessionToken = userData.sessionToken || 'no_token';
+            const cacheKey = `${userData.userId}_${userData.project_name}_${userData.unit_no}_${sessionToken}`;
+
+            if (userFolderCache.has(cacheKey)) {
+                targetFolderId = userFolderCache.get(cacheKey);
+            } else {
+                const today = new Date().toISOString().split('T')[0];
+                const projectName = userData.project_name?.replace(/[^a-zA-Z0-9]/g, '_') || 'Project';
+                const unitNo = userData.unit_no?.replace(/[^a-zA-Z0-9]/g, '_') || 'Unit';
+                const userFolderName = `${today} - ${userData.username} - ${projectName} - ${unitNo}`;
+                targetFolderId = await createOrGetCompanySubFolder(companyDrive, userFolderName, agentClaimFolder);
+                userFolderCache.set(cacheKey, targetFolderId);
+            }
+        }
+
+        const fileMetadata = {
+            name: fileName,
+            parents: [targetFolderId]
+        };
+
+        const media = {
+            mimeType: mimeType,
+            body: fileStream
+        };
+
+        const response = await companyDrive.files.create({
+            resource: fileMetadata,
+            media: media,
+            fields: 'id, name, webViewLink'
+        });
+
+        console.log('✅ File streamed to company Google Drive:', response.data.name);
+        return response.data;
+    } catch (error) {
+        console.error('❌ Error streaming to company Google Drive:', error);
+        throw error;
+    }
+}
+
+
                                 .setLabel('❌ Cancel')
                                 .setStyle(ButtonStyle.Secondary)
                         );
@@ -4140,17 +4218,13 @@ async function transferJotformFilesToGoogleDrive(submissionId, userData) {
                                 continue;
                             }
 
-                            // Use arrayBuffer for better binary file handling
-                            const arrayBuffer = await fileResponse.arrayBuffer();
-                            const fileBuffer = Buffer.from(arrayBuffer);
-
-                            // Validate file size
-                            if (fileBuffer.length === 0) {
-                                console.error('Downloaded file is empty:', fileUrl);
+                            // Stream file directly from Jotform to Google Drive without local storage
+                            const fileStream = fileResponse.body;
+                            
+                            if (!fileStream) {
+                                console.error('No file stream available:', fileUrl);
                                 continue;
                             }
-
-                            console.log('Downloaded file size:', fileBuffer.length, 'bytes');
 
                             // Extract filename from URL or create one
                             const urlParts = fileUrl.split('/');
@@ -4168,22 +4242,6 @@ async function transferJotformFilesToGoogleDrive(submissionId, userData) {
                             const timestamp = new Date().toISOString().split('T')[0];
                             const uniqueId = Date.now() + '_' + Math.random().toString(36).substr(2, 9);
                             const finalFilename = `${projectName}_${userData.unit_no || 'unit'}_${timestamp}_${uniqueId}_${cleanFilename}`;
-
-                            // Save temporarily with unique path to avoid conflicts
-                            const tempPath = `uploads/temp_${uniqueId}_${cleanFilename}`;
-                            
-                            // Write file with binary flag to preserve integrity
-                            await fs.writeFile(tempPath, fileBuffer, { encoding: null });
-
-                            // Verify the written file size matches
-                            const stats = await fs.stat(tempPath);
-                            if (stats.size !== fileBuffer.length) {
-                                console.error('File size mismatch after writing:', stats.size, 'vs', fileBuffer.length);
-                                await fs.unlink(tempPath);
-                                continue;
-                            }
-
-                            console.log('File written to temp storage successfully, size:', stats.size, 'bytes');
 
                             // Determine MIME type based on file extension
                             const extension = cleanFilename.toLowerCase().split('.').pop();
@@ -4205,13 +4263,13 @@ async function transferJotformFilesToGoogleDrive(submissionId, userData) {
                                 case 'tif': mimeType = 'image/tiff'; break;
                             }
 
-                            // Upload to Google Drive with organized folder structure
-                            console.log('Uploading to Google Drive:', finalFilename, 'MIME type:', mimeType);
+                            // Upload directly to Google Drive with stream
+                            console.log('Streaming directly to Google Drive:', finalFilename, 'MIME type:', mimeType);
                             const enhancedUserData = {
                                 ...userData,
                                 username: userData.username || 'Unknown User'
                             };
-                            const driveFile = await uploadToCompanyGoogleDrive(tempPath, finalFilename, mimeType, enhancedUserData);
+                            const driveFile = await uploadStreamToCompanyGoogleDrive(fileStream, finalFilename, mimeType, enhancedUserData);
 
                             uploadedFiles.push({
                                 originalName: cleanFilename,
@@ -4220,12 +4278,8 @@ async function transferJotformFilesToGoogleDrive(submissionId, userData) {
                                 driveLink: driveFile.webViewLink,
                                 jotformUrl: fileUrl,
                                 questionId: questionId,
-                                fileSize: stats.size,
                                 mimeType: mimeType
                             });
-
-                            // Clean up temp file
-                            await fs.unlink(tempPath);
 
                             console.log('File successfully transferred:', finalFilename, 'Size:', stats.size, 'bytes');
 
