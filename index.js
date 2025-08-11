@@ -8,7 +8,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const settings = require('./settings.json');
 const fetch = require('node-fetch');
-const { zonedTimeToUtc, utcToZonedTime, format } = require('date-fns-tz');
+const { format } = require('date-fns-tz');
 
 // GMT+8 timezone constant
 const GMT8_TIMEZONE = 'Asia/Singapore'; // Singapore is in GMT+8
@@ -20,7 +20,7 @@ function formatGMT8DateString(date) {
 
 // Helper function to get current date in GMT+8
 function getGMT8Date() {
-    return zonedTimeToUtc(Date.now(), GMT8_TIMEZONE);
+    return new Date();
 }
 
 
