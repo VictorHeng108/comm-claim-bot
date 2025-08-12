@@ -208,5 +208,82 @@
     "jotformSubmissionId": "6307782160111736140",
     "user_id": "1092751498250817567",
     "submitted_at": "2025-08-12T03:25:32.820Z"
+  },
+  {
+    "project_name": "BHP",
+    "unit_no": "A2202",
+    "spa_price": "2,000,000",
+    "nett_price": "1000000",
+    "commission_rate": "2.2",
+    "agents": [
+      {
+        "name": "Alene",
+        "code": "108003",
+        "percentage": 40,
+        "commission": "8800.00"
+      },
+      {
+        "name": "Hui",
+        "code": "108050",
+        "percentage": 60,
+        "commission": "13200.00"
+      }
+    ],
+    "submission_date": "2025-08-12T04:25:18.981Z",
+    "customer_name": "Ben",
+    "customer_phone": "01579900",
+    "customer_address": "Daddy’s",
+    "spa_date": "2025-08-08",
+    "la_date": "2026-08-08",
+    "dataConfirmed": true,
+    "status": "awaiting_form_completion",
+    "sessionToken": "token_1394374665119596616_1754972854934_rdrtr72ls",
+    "userId": "1394374665119596616",
+    "username": "my_little_spaces",
+    "jotform": {
+      "formId": "252111999816061",
+      "formUrl": "https://form.jotform.com/252111999816061?user_id=1394374665119596616&price_token=token_1394374665119596616_1754972854934_rdrtr72ls",
+      "isTemplate": true,
+      "webhookUrl": "https://comm-claim-bot-production.up.railway.app/webhook/jotform",
+      "sessionToken": "token_1394374665119596616_1754972854934_rdrtr72ls"
+    },
+    "uploadedFiles": [
+      {
+        "originalName": "(SIGNED) 01. AR1 - Annual Return 2023 (Section 68) (1).pdf",
+        "cleanName": "(SIGNED) 01. AR1 - Annual Return 2023 (Section 68) (1).pdf",
+        "finalName": "BHP_A2202_2025-08-12_1754972963785_2q2g9v6im_(SIGNED) 01. AR1 - Annual Return 2023 (Section 68) (1).pdf",
+        "driveId": "1bGGXNlN1-HDll0_aToKXayBsYQEFWBqc",
+        "driveLink": "https://drive.google.com/file/d/1bGGXNlN1-HDll0_aToKXayBsYQEFWBqc/view?usp=drivesdk",
+        "jotformUrl": "https://www.jotform.com/uploads/victorheng108/252111999816061/6307821459787914514/(SIGNED) 01. AR1 - Annual Return 2023 (Section 68) (1).pdf",
+        "questionId": "4",
+        "fileSize": 941964,
+        "mimeType": "application/pdf"
+      },
+      {
+        "originalName": "Receipt_0000025505_2346_v1.pdf",
+        "cleanName": "Receipt_0000025505_2346_v1.pdf",
+        "finalName": "BHP_A2202_2025-08-12_1754972969468_rlz1ykby8_Receipt_0000025505_2346_v1.pdf",
+        "driveId": "1955cNXRYqsLjS6_nvfn-n1TIecoL-uEE",
+        "driveLink": "https://drive.google.com/file/d/1955cNXRYqsLjS6_nvfn-n1TIecoL-uEE/view?usp=drivesdk",
+        "jotformUrl": "https://www.jotform.com/uploads/victorheng108/252111999816061/6307821459787914514/Receipt_0000025505_2346_v1.pdf",
+        "questionId": "7",
+        "fileSize": 49705,
+        "mimeType": "application/pdf"
+      },
+      {
+        "originalName": "Heng_Victor_DISC_and_Motivators.pdf",
+        "cleanName": "Heng_Victor_DISC_and_Motivators.pdf",
+        "finalName": "BHP_A2202_2025-08-12_1754972974375_pgupz6y5w_Heng_Victor_DISC_and_Motivators.pdf",
+        "driveId": "1VhpCA-CTbhgZibFV_DPMJKzZgtONwen7",
+        "driveLink": "https://drive.google.com/file/d/1VhpCA-CTbhgZibFV_DPMJKzZgtONwen7/view?usp=drivesdk",
+        "jotformUrl": "https://www.jotform.com/uploads/victorheng108/252111999816061/6307821459787914514/Heng_Victor_DISC_and_Motivators.pdf",
+        "questionId": "8",
+        "fileSize": 299433,
+        "mimeType": "application/pdf"
+      }
+    ],
+    "jotformSubmissionId": "6307821459787914514",
+    "user_id": "1394374665119596616",
+    "submitted_at": "2025-08-12T04:29:38.587Z"
   }
 ]
