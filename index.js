@@ -1949,8 +1949,7 @@ client.on('interactionCreate', async interaction => {
                 await interaction.followUp({
                     content: '✅ **Submission Confirmed!**\n\n📋 **Your commission data has been saved.**\n🎯 **Document upload form ready!**',
                     embeds: [embed],
-                    components: [actionRow],
-                    ephemeral: true
+                    components: [actionRow]
                 });
 
             } catch (error) {
@@ -2491,8 +2490,7 @@ client.on('interactionCreate', async interaction => {
                 // Check if already completed via webhook for THIS specific user AND has actual files
                 if (data.status === 'completed' && data.jotformSubmissionId && data.uploadedFiles && data.uploadedFiles.length > 0) {
                     await interaction.followUp({
-                        content: `🎉 **Commission Submission Complete!**\n\nCongratulations! Your claim submission is under review. Please be patient, we have notified our admin to proceed with your application.\n\n✅ **Status:** Complete\n📁 **Documents:** Successfully uploaded\n📋 **Notification:** Sent to admin channel\n\n📄 **Files Uploaded:** ${data.uploadedFiles.length} document(s)`,
-                        ephemeral: true
+                        content: `🎉 **Commission Submission Complete!**\n\nCongratulations! Your claim submission is under review. Please be patient, we have notified our admin to proceed with your application.\n\n✅ **Status:** Complete\n📁 **Documents:** Successfully uploaded\n📋 **Notification:** Sent to admin channel\n\n📄 **Files Uploaded:** ${data.uploadedFiles.length} document(s)`
                     });
                     submissions.delete(userId);
                     return;
@@ -2549,8 +2547,15 @@ client.on('interactionCreate', async interaction => {
 
                     // Check if this submission was already processed by this user
                     if (data.jotformSubmissionId === hasNewSubmissions.submissionId && data.uploadedFiles && data.uploadedFiles.length > 0) {
+                        // Final completion message
+                        // Send completion as a new persistent message
+                        await interaction.followUp({
+                            content: `🎉 **Commission Submission Complete!**\n\nCongratulations! Your claim submission is under review. Please be patient, we have notified our admin to proceed with your application.\n\n✅ **Status:** Complete\n📁 **Documents:** Successfully uploaded\n📋 **Notification:** Sent to admin channel\n\n📄 **Files Uploaded:** ${data.uploadedFiles.length} document(s)`
+                        });
+                        
+                        // Clear the status check message
                         await interaction.editReply({
-                            content: `🎉 **Commission Submission Complete!**\n\nCongratulations! Your claim submission is under review. Please be patient, we have notified our admin to proceed with your application.\n\n✅ **Status:** Complete\n📁 **Documents:** Successfully uploaded\n📋 **Notification:** Sent to admin channel\n\n📄 **Files Uploaded:** ${data.uploadedFiles.length} document(s)`,
+                            content: '✅ Processing completed - see message below',
                             embeds: [],
                             components: []
                         });
