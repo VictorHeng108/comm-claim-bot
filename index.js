@@ -4062,9 +4062,15 @@ async function transferJotformFilesToGoogleDrive(submissionId, userData) {
                         try {
                             console.log('Downloading file from Jotform:', fileUrl);
 
-                            // Download file from Jotform with proper binary handling
-                            const fileResponse = await fetch(fileUrl, {
+                            // Download file from Jotform with proper authentication
+                            // Ensure authenticated access to Jotform file
+                            const authedUrl = fileUrl.includes('?') 
+                                ? `${fileUrl}&apikey=${JOTFORM_API_KEY}`
+                                : `${fileUrl}?apikey=${JOTFORM_API_KEY}`;
+
+                            const fileResponse = await fetch(authedUrl, {
                                 headers: {
+                                    'APIKEY': JOTFORM_API_KEY,
                                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                                     'Accept': '*/*'
                                 }
@@ -4082,20 +4088,40 @@ async function transferJotformFilesToGoogleDrive(submissionId, userData) {
                             // Use buffer() method for proper binary handling - this preserves original file integrity
                             const fileBuffer = await fileResponse.buffer();
 
-                            // Validate file size
+                            // Validate file size and content
                             if (fileBuffer.length === 0) {
                                 console.error('Downloaded file is empty:', fileUrl);
                                 continue;
                             }
 
+                            // Check if we got an HTML error page instead of the actual file
+                            const fileStart = fileBuffer.toString('utf8', 0, Math.min(200, fileBuffer.length)).toLowerCase();
+                            if (fileStart.includes('<!doctype html') || fileStart.includes('<html') || fileStart.includes('access denied')) {
+                                console.error('Downloaded HTML error page instead of file:', fileUrl);
+                                console.error('File content preview:', fileStart);
+                                continue;
+                            }
+
                             console.log('Downloaded file size:', fileBuffer.length, 'bytes');
 
-                            // Extract filename from URL or create one
-                            const urlParts = fileUrl.split('/');
-                            let originalFilename = urlParts[urlParts.length - 1] || `document_${Date.now()}`;
+                            // Extract filename from Content-Disposition header or URL
+                            let originalFilename = `document_${Date.now()}`;
                             
-                            // Remove query parameters and decode URL encoding
-                            originalFilename = decodeURIComponent(originalFilename.split('?')[0]);
+                            // Try to extract original filename from Content-Disposition header
+                            const contentDisposition = fileResponse.headers.get('content-disposition');
+                            if (contentDisposition && /filename=/i.test(contentDisposition)) {
+                                const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+                                if (filenameMatch && filenameMatch[1]) {
+                                    originalFilename = filenameMatch[1].replace(/['"]/g, '');
+                                    originalFilename = decodeURIComponent(originalFilename);
+                                }
+                            } else {
+                                // Fallback to URL-based filename extraction
+                                const urlParts = fileUrl.split('/');
+                                originalFilename = urlParts[urlParts.length - 1] || `document_${Date.now()}`;
+                                // Remove query parameters and decode URL encoding
+                                originalFilename = decodeURIComponent(originalFilename.split('?')[0]);
+                            }
 
                             // Keep original filename as much as possible - minimal sanitization
                             let cleanFilename = originalFilename.replace(/[<>:"/\\|?*]/g, '_');
