@@ -57,7 +57,7 @@ app.use(session({
     secret: process.env.SESSION_SECRET || 'your-secret-key',
     resave: false,
     saveUninitialized: false,
-    cookie: { 
+    cookie: {
         secure: false, // Set to true in production with HTTPS
         maxAge: 24 * 60 * 60 * 1000 // 24 hours
     }
@@ -607,25 +607,27 @@ function createConfirmationEmbed(data) {
         .addFields(
             { name: '🏢 Project Details', value: `**Project:** ${data.project_name}\n**Unit:** ${data.unit_no}\n**SPA Price:** RM${Number(String(data.spa_price).replace(/,/g, '')).toLocaleString()}\n**Nett Price:** RM${Number(String(data.nett_price).replace(/,/g, '')).toLocaleString()}\n**Commission Rate:** ${data.commission_rate}%\n\n`, inline: false },
             { name: '👤 Customer Details', value: `**Name:** ${data.customer_name}\n**Phone:** ${data.customer_phone}\n**Address:** ${data.customer_address}\n\n`, inline: false }
-        )
-        .setTimestamp();
+        );
 
     // Add payment-specific details
+    embed.addFields({ name: '\u200B', value: '\u200B', inline: false });
+
     if (data.buyer_type === 'loan') {
         let paymentDetails = `**SPA Date:** ${data.spa_date}\n**LA Date:** ${data.la_date}\n**LO Date:** ${data.lo_date}\n**Bank:** ${data.bank_of_finance}\n**Loan Amount:** RM${data.loan_amount.toLocaleString()}`;
-        
+
         if (data.differential_amount) {
             paymentDetails += `\n**Differential Paid:** RM${data.differential_amount.toLocaleString()}\n**Payment Date:** ${data.differential_payment_date}`;
         }
-        
-        embed.addFields({ name: '🏦 Loan Buyer Details', value: `${paymentDetails}\n\n`, inline: false });
+
+        embed.addFields({ name: '🏦 Loan Buyer Details', value: paymentDetails, inline: false });
     } else if (data.buyer_type === 'cash') {
         const paymentDetails = `**SPA Date:** ${data.spa_date}\n**Downpayment:** RM${data.downpayment_amount.toLocaleString()}\n**Payment Date:** ${data.payment_date}`;
-        embed.addFields({ name: '💵 Cash Buyer Details', value: `${paymentDetails}\n\n`, inline: false });
+        embed.addFields({ name: '💵 Cash Buyer Details', value: paymentDetails, inline: false });
     } else {
         // Legacy support for old submissions without buyer type
-        embed.addFields({ name: '📅 Important Dates', value: `**SPA Date:** ${data.spa_date || 'N/A'}\n**LA Date:** ${data.la_date || 'N/A'}\n\n`, inline: false });
+        embed.addFields({ name: '📅 Important Dates', value: `**SPA Date:** ${data.spa_date || 'N/A'}\n**LA Date:** ${data.la_date || 'N/A'}`, inline: false });
     }
+    embed.setTimestamp();
 
     // Add agent details
     const agentDetails = data.agents
@@ -640,14 +642,15 @@ function createConfirmationEmbed(data) {
         .join('\n');
 
     if (agentDetails) {
-        embed.addFields({ name: '👥 Agent Commission Breakdown', value: `${agentDetails}\n\n`, inline: false });
+        embed.addFields({ name: '\u200B', value: '\u200B', inline: false });
+        embed.addFields({ name: '👥 Agent Commission Breakdown', value: agentDetails, inline: false });
 
         const totalCommission = data.agents.reduce((sum, agent) => sum + parseFloat(agent.commission || 0), 0);
         const formattedTotalCommission = totalCommission.toLocaleString('en-US', {
             minimumFractionDigits: 2,
             maximumFractionDigits: 2
         });
-        embed.addFields({ name: '💰 Total Commission', value: `RM${formattedTotalCommission}\n\n`, inline: true });
+        embed.addFields({ name: '💰 Total Commission', value: `RM${formattedTotalCommission}`, inline: true });
 
         // Add Fast Commission section
         const fastCommissionPercentage = getFastCommissionPercentage(data.project_name);
@@ -666,20 +669,17 @@ function createConfirmationEmbed(data) {
             })
             .join('\n');
 
-        embed.addFields({ 
-            name: `⚡ Fast Commission (${fastCommissionPercentage}%)`, 
-            value: `${fastCommissionDetails}\n\n`, 
-            inline: false 
+        embed.addFields({ name: '\u200B', value: '\u200B', inline: false });
+        embed.addFields({
+            name: `⚡ Fast Commission (${fastCommissionPercentage}%)`,
+            value: fastCommissionDetails,
+            inline: false
         });
 
-        const formattedFastCommissionAmount = fastCommissionAmount.toLocaleString('en-US', {
-            minimumFractionDigits: 2,
-            maximumFractionDigits: 2
-        });
-        embed.addFields({ 
-            name: '💸 Total Fast Commission', 
-            value: `RM${formattedFastCommissionAmount}\n\n`, 
-            inline: true 
+        embed.addFields({
+            name: '💸 Total Fast Commission',
+            value: `RM${formattedFastCommissionAmount}`,
+            inline: true
         });
     }
 
@@ -831,7 +831,7 @@ client.once('ready', async () => {
 
     console.log('✅ Command visibility properly configured:');
     console.log('  - fast-comm-submission: VISIBLE to all users globally');
-    console.log('  - check-my-upload: VISIBLE to all users globally'); 
+    console.log('  - check-my-upload: VISIBLE to all users globally');
     console.log('  - admin-action: HIDDEN from regular users, only visible in admin guild');
 
     // Start express server
@@ -1033,8 +1033,8 @@ client.on('interactionCreate', async interaction => {
 
                     let filteredData = backupData;
                     if (userIdFilter) {
-                        filteredData = backupData.filter(submission => 
-                            submission.user_id === userIdFilter || 
+                        filteredData = backupData.filter(submission =>
+                            submission.user_id === userIdFilter ||
                             submission.username?.toLowerCase().includes(userIdFilter.toLowerCase())
                         );
                     }
@@ -1043,8 +1043,8 @@ client.on('interactionCreate', async interaction => {
 
                     if (recentSubmissions.length === 0) {
                         await interaction.reply({
-                            content: userIdFilter ? 
-                                `❌ No submissions found for user: ${userIdFilter}` : 
+                            content: userIdFilter ?
+                                `❌ No submissions found for user: ${userIdFilter}` :
                                 '❌ No submissions found in database.',
                             ephemeral: true
                         });
@@ -1616,8 +1616,8 @@ client.on('interactionCreate', async interaction => {
             // Process only the current agent (step)
             try {
                 const name = interaction.fields.getTextInputValue(`agent${step}_name`) || '';
-                const code = interaction.fields.getTextInputValue(`agent${step}_code`) || '';
-                const percentage = interaction.fields.getTextInputValue(`agent${step}_percentage`) || '0';
+                const code = interaction.fields.getTextInputValue(`agent${agentNum}_code`) || '';
+                const percentage = interaction.fields.getTextInputValue(`agent${agentNum}_percentage`) || '0';
 
                 if (name || code || percentage !== '0') {
                     data.agents[step-1] = { name, code, percentage: parseFloat(percentage) || 0 };
@@ -1637,7 +1637,7 @@ client.on('interactionCreate', async interaction => {
                         .setLabel(`Continue: Add Consultant ${step + 1}`)
                         .setStyle(ButtonStyle.Primary),
                     new ButtonBuilder()
-                        .setCustomId('skip_to_customer')  
+                        .setCustomId('skip_to_customer')
                         .setLabel('Skip to Customer Details')
                         .setStyle(ButtonStyle.Secondary)
                 ];
@@ -1784,7 +1784,6 @@ client.on('interactionCreate', async interaction => {
                             .setCustomId('edit_agent_percentages')
                             .setLabel('✏️ Edit Consultant Percentages')
                             .setStyle(ButtonStyle.Primary),
-
                         new ButtonBuilder()
                             .setCustomId('cancel_submission')
                             .setLabel('❌ Cancel')
@@ -1856,7 +1855,7 @@ client.on('interactionCreate', async interaction => {
             data.loan_amount = parseFloat(interaction.fields.getTextInputValue('loan_amount').replace(/,/g, ''));
 
             const nettPrice = parseFloat(String(data.nett_price).replace(/,/g, ''));
-            
+
             // Check if loan amount covers nett price
             if (data.loan_amount >= nettPrice) {
                 // Proceed to confirmation
@@ -2140,7 +2139,7 @@ client.on('interactionCreate', async interaction => {
         else if (interaction.customId === 'select_cash_buyer') {
             const data = submissions.get(userId);
             const nettPrice = parseFloat(String(data.nett_price).replace(/,/g, ''));
-            
+
             const cashPaymentRow = new ActionRowBuilder()
                 .addComponents(
                     new ButtonBuilder()
@@ -2360,7 +2359,7 @@ client.on('interactionCreate', async interaction => {
                     .setDescription('Your document upload form is ready!')
                     .addFields(
                         { name: '📝 What to do next:', value: '1. Click the "Upload Documents" button below\n2. Fill out the Jotform with your documents\n3. Submit the form\n4. Return here and click "Check Upload Status"', inline: false },
-                        { name: '📋 Required Documents:', value: '• Booking Form\n• SPA Document\n• LA Document', inline: false },
+                        { name: '📋 Required Documents:', value: '• Booking Form\n• SPA Document\n• LO Document', inline: false },
                         { name: '📋 Project Info', value: `${data.project_name} - ${data.unit_no}`, inline: false }
                     )
                     .setFooter({ text: 'The form will automatically save your documents' });
@@ -2422,7 +2421,7 @@ client.on('interactionCreate', async interaction => {
                             .setDescription('Your personalized Jotform has been created after retry!')
                             .addFields(
                                 { name: '📝 What to do next:', value: '1. Click the "Upload Documents" button below\n2. Fill out the Jotform with your documents\n3. Submit the form\n4. Return here and click "Check Upload Status"', inline: false },
-                                { name: '📋 Required Documents:', value: '• Booking Form\n• SPA Document\n• LA Document', inline: false }
+                                { name: '📋 Required Documents:', value: '• Booking Form\n• SPA Document\n• LO Document', inline: false }
                             )
                             .setFooter({ text: 'The form will automatically save your documents' });
 
@@ -2995,7 +2994,7 @@ client.on('interactionCreate', async interaction => {
                         await interaction.followUp({
                             content: `🎉 **Commission Submission Complete!**\n\nCongratulations! Your claim submission is under review. Please be patient, we have notified our admin to proceed with your application.\n\n✅ **Status:** Complete\n📁 **Documents:** Successfully uploaded\n📋 **Notification:** Sent to admin channel\n\n📄 **Files Uploaded:** ${data.uploadedFiles.length} document(s)`
                         });
-                        
+
                         // Clear the status check message
                         await interaction.editReply({
                             content: '✅ Processing completed - see message below',
@@ -3238,10 +3237,10 @@ client.on('interactionCreate', async interaction => {
             const embed = createConfirmationEmbed(data);
             embed.setTitle('💾 Your Preserved Data');
             embed.setColor(0x28A745);
-            embed.addFields({ 
-                name: '✅ Status', 
-                value: `Data Confirmed: ${data.dataConfirmed ? 'Yes' : 'No'}\nBackup Saved: ${data.backupSaved ? 'Yes' : 'No'}\nPreserved for: ${interaction.user.username}`, 
-                inline: false 
+            embed.addFields({
+                name: '✅ Status',
+                value: `Data Confirmed: ${data.dataConfirmed ? 'Yes' : 'No'}\nBackup Saved: ${data.backupSaved ? 'Yes' : 'No'}\nPreserved for: ${interaction.user.username}`,
+                inline: false
             });
 
             const actionRow = new ActionRowBuilder()
@@ -3304,7 +3303,7 @@ client.on('interactionCreate', async interaction => {
                     .setDescription('Your personalized Jotform has been created successfully!')
                     .addFields(
                         { name: '📝 What to do next:', value: '1. Click the "Upload Documents" button below\n2. Fill out the Jotform with your documents\n3. Submit the form\n4. Return here and click "Check Upload Status"', inline: false },
-                        { name: '📋 Required Documents:', value: '• Booking Form\n• SPA Document\n• LA Document', inline: false }
+                        { name: '📋 Required Documents:', value: '• Booking Form\n• SPA Document\n• LO Document', inline: false }
                     )
                     .setFooter({ text: 'The form will automatically save your documents' });
 
@@ -3395,7 +3394,7 @@ client.on('interactionCreate', async interaction => {
                 .setDescription('Your document upload form is ready!')
                 .addFields(
                     { name: '📝 What to do next:', value: '1. Click the "Upload Documents" button below\n2. Fill out the Jotform with your documents\n3. Submit the form\n4. Return here and click "Check Upload Status"', inline: false },
-                    { name: '📋 Required Documents:', value: '• Booking Form\n• SPA Document\n• LA Document', inline: false },
+                    { name: '📋 Required Documents:', value: '• Booking Form\n• SPA Document\n• LO Document', inline: false },
                     { name: '📋 Project Info', value: `${data.project_name} - ${data.unit_no}`, inline: false }
                 )
                 .setFooter({ text: 'The form will automatically save your documents' });
@@ -3623,7 +3622,7 @@ async function uploadToCompanyGoogleDrive(filePath, fileName, mimeType, userData
             throw new Error('Please set COMPANY_DRIVE_ACCESS_TOKEN and COMPANY_DRIVE_REFRESH_TOKEN in Secrets. Run get_oauth_tokens.js to get them.');
         }
 
-        oauth_client.setCredentials({ 
+        oauth_client.setCredentials({
             access_token: accessToken,
             refresh_token: refreshToken
         });
@@ -3807,8 +3806,8 @@ async function createJotformUpload(data, sessionToken) {
 
         console.log('Generated Jotform URL with session token:', sessionToken);
         console.log('Generated Jotform URL for:', data.project_name);
-        return { 
-            formId: JOTFORM_TEMPLATE_ID, 
+        return {
+            formId: JOTFORM_TEMPLATE_ID,
             formUrl: formUrl,
             isTemplate: true,
             webhookUrl: webhookUrl,
@@ -4246,15 +4245,15 @@ app.post('/upload/:userId', upload.array('documents'), async (req, res) => {
             await fs.unlink(file.path);
         }
 
-        res.json({ 
-            success: true, 
+        res.json({
+            success: true,
             message: 'Files uploaded successfully to your Google Drive',
             files: uploadedFiles
         });
     } catch (error) {
         console.error('Upload error:', error);
-        res.status(500).json({ 
-            success: false, 
+        res.status(500).json({
+            success: false,
             message: 'Failed to upload files'
         });
     }
@@ -4512,7 +4511,7 @@ async function transferJotformFilesToGoogleDrive(submissionId, userData) {
 
                             // Download file from Jotform with proper authentication
                             // Ensure authenticated access to Jotform file
-                            const authedUrl = fileUrl.includes('?') 
+                            const authedUrl = fileUrl.includes('?')
                                 ? `${fileUrl}&apikey=${JOTFORM_API_KEY}`
                                 : `${fileUrl}?apikey=${JOTFORM_API_KEY}`;
 
@@ -4523,7 +4522,7 @@ async function transferJotformFilesToGoogleDrive(submissionId, userData) {
                                     'Accept': '*/*'
                                 }
                             });
-                            
+
                             if (!fileResponse.ok) {
                                 console.error('Failed to download file:', fileUrl, 'Status:', fileResponse.status);
                                 continue;
@@ -4554,7 +4553,7 @@ async function transferJotformFilesToGoogleDrive(submissionId, userData) {
 
                             // Extract filename from Content-Disposition header or URL
                             let originalFilename = `document_${Date.now()}`;
-                            
+
                             // Try to extract original filename from Content-Disposition header
                             const contentDisposition = fileResponse.headers.get('content-disposition');
                             if (contentDisposition && /filename=/i.test(contentDisposition)) {
@@ -4614,7 +4613,7 @@ async function transferJotformFilesToGoogleDrive(submissionId, userData) {
 
                             // Use server-provided content type or detect from extension
                             let mimeType = contentType;
-                            
+
                             // Only override if content type is generic
                             if (mimeType === 'application/octet-stream' || mimeType === 'application/binary') {
                                 const extension = cleanFilename.toLowerCase().split('.').pop();
@@ -4637,12 +4636,12 @@ async function transferJotformFilesToGoogleDrive(submissionId, userData) {
                             console.log('Uploading to Google Drive:', finalFilename);
                             console.log('MIME type:', mimeType);
                             console.log('File size:', stats.size, 'bytes');
-                            
+
                             const enhancedUserData = {
                                 ...userData,
                                 username: userData.username || 'Unknown User'
                             };
-                            
+
                             const driveFile = await uploadToCompanyGoogleDrive(tempPath, finalFilename, mimeType, enhancedUserData);
 
                             uploadedFiles.push({
@@ -4750,16 +4749,16 @@ async function sendSubmissionNotification(userData, submissionId) {
                 .map(file => `📁 [${file.originalName}](${file.driveLink})`)
                 .join('\n');
 
-            embed.addFields({ 
-                name: `📂 Documents Uploaded to Google Drive (${userData.uploadedFiles.length})`, 
-                value: fileList.length > 1024 ? fileList.substring(0, 1020) + '...' : fileList, 
-                inline: false 
+            embed.addFields({
+                name: `📂 Documents Uploaded to Google Drive (${userData.uploadedFiles.length})`,
+                value: fileList.length > 1024 ? fileList.substring(0, 1020) + '...' : fileList,
+                inline: false
             });
         } else {
-            embed.addFields({ 
-                name: '📂 Documents', 
-                value: '⚠️ No files were transferred to Google Drive', 
-                inline: false 
+            embed.addFields({
+                name: '📂 Documents',
+                value: '⚠️ No files were transferred to Google Drive',
+                inline: false
             });
         }
 
@@ -4784,20 +4783,20 @@ async function updateChecklistDisplay(message, data, userId) {
         .setColor(0xFF9900)
         .setDescription('Please upload all required documents:')
         .addFields(
-            { 
-                name: '📝 Booking Form', 
-                value: checklist.booking_form?.uploaded ? `✅ Uploaded (${checklist.booking_form.files.length} file(s))` : '❌ Not uploaded', 
-                inline: true 
+            {
+                name: '📝 Booking Form',
+                value: checklist.booking_form?.uploaded ? `✅ Uploaded (${checklist.booking_form.files.length} file(s))` : '❌ Not uploaded',
+                inline: true
             },
-            { 
-                name: '📄 SPA', 
-                value: checklist.spa?.uploaded ? `✅ Uploaded (${checklist.spa.files.length} file(s))` : '❌ Not uploaded', 
-                inline: true 
+            {
+                name: '📄 SPA',
+                value: checklist.spa?.uploaded ? `✅ Uploaded (${checklist.spa.files.length} file(s))` : '❌ Not uploaded',
+                inline: true
             },
-            { 
-                name: '📑 LA', 
-                value: checklist.la?.uploaded ? `✅ Uploaded (${checklist.la.files.length} file(s))` : '❌ Not uploaded', 
-                inline: true 
+            {
+                name: '📑 LO',
+                value: checklist.la?.uploaded ? `✅ Uploaded (${checklist.la.files.length} file(s))` : '❌ Not uploaded',
+                inline: true
             }
         )
         .setFooter({ text: 'Click the buttons below to upload each document type' });
@@ -4814,7 +4813,7 @@ async function updateChecklistDisplay(message, data, userId) {
                 .setStyle(checklist.spa?.uploaded ? ButtonStyle.Secondary : ButtonStyle.Primary),
             new ButtonBuilder()
                 .setCustomId('upload_la')
-                .setLabel('📑 Upload LA')
+                .setLabel('📑 Upload LO')
                 .setStyle(checklist.la?.uploaded ? ButtonStyle.Secondary : ButtonStyle.Primary)
         );
 
@@ -4839,9 +4838,9 @@ async function updateChecklistDisplay(message, data, userId) {
         const channel = message.channel;
         const messages = await channel.messages.fetch({ limit: 20 });
 
-        const checklistMessage = messages.find(msg => 
-            msg.author.id === message.client.user.id && 
-            msg.embeds.length > 0 && 
+        const checklistMessage = messages.find(msg =>
+            msg.author.id === message.client.user.id &&
+            msg.embeds.length > 0 &&
             msg.embeds[0].title === '📋 Document Upload Checklist'
         );
 
