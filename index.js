@@ -676,6 +676,11 @@ function createConfirmationEmbed(data) {
             inline: false
         });
 
+        const formattedFastCommissionAmount = fastCommissionAmount.toLocaleString('en-US', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        });
+
         embed.addFields({
             name: '💸 Total Fast Commission',
             value: `RM${formattedFastCommissionAmount}`,
@@ -2127,13 +2132,31 @@ client.on('interactionCreate', async interaction => {
         else if (interaction.customId === 'skip_to_customer' || interaction.customId === 'show_customer_form') {
             const data = submissions.get(userId);
             const customerModal = createCustomerModal(data);
-            await interaction.showModal(customerModal);
+            
+            try {
+                await interaction.showModal(customerModal);
+            } catch (error) {
+                if (error.code === 40060) {
+                    console.log('Interaction already acknowledged, skipping modal');
+                    return;
+                }
+                throw error;
+            }
         }
 
         else if (interaction.customId === 'back_to_customer_form') {
             const data = submissions.get(userId);
             const customerModal = createCustomerModal(data);
-            await interaction.showModal(customerModal);
+            
+            try {
+                await interaction.showModal(customerModal);
+            } catch (error) {
+                if (error.code === 40060) {
+                    console.log('Interaction already acknowledged, skipping modal');
+                    return;
+                }
+                throw error;
+            }
         }
 
         else if (interaction.customId === 'select_cash_buyer') {
