@@ -609,9 +609,6 @@ function createConfirmationEmbed(data) {
             { name: '👤 Customer Details', value: `**Name:** ${data.customer_name}\n**Phone:** ${data.customer_phone}\n**Address:** ${data.customer_address}\n\n`, inline: false }
         );
 
-    // Add payment-specific details
-    embed.addFields({ name: '\u200B', value: '\u200B', inline: false });
-
     if (data.buyer_type === 'loan') {
         let paymentDetails = `**SPA Date:** ${data.spa_date}\n**LA Date:** ${data.la_date}\n**LO Date:** ${data.lo_date}\n**Bank:** ${data.bank_of_finance}\n**Loan Amount:** RM${data.loan_amount.toLocaleString()}`;
 
@@ -642,7 +639,6 @@ function createConfirmationEmbed(data) {
         .join('\n');
 
     if (agentDetails) {
-        embed.addFields({ name: '\u200B', value: '\u200B', inline: false });
         embed.addFields({ name: '👥 Agent Commission Breakdown', value: agentDetails, inline: false });
 
         const totalCommission = data.agents.reduce((sum, agent) => sum + parseFloat(agent.commission || 0), 0);
