@@ -425,8 +425,28 @@ function createCustomerModal(existingData = {}) {
             .setCustomId('customer_address')
             .setLabel('Customer Address')
             .setStyle(TextInputStyle.Paragraph)
-            .setRequired(true),
+            .setRequired(true)
+    ];
 
+    // Set values only if existing data exists
+    if (existingData.customer_name) components[0].setValue(existingData.customer_name);
+    if (existingData.customer_phone) components[1].setValue(existingData.customer_phone);
+    if (existingData.customer_address) components[2].setValue(existingData.customer_address);
+
+    components.forEach(component => {
+        modal.addComponents(new ActionRowBuilder().addComponents(component));
+    });
+
+    return modal;
+}
+
+// Create loan buyer details modal
+function createLoanBuyerModal(existingData = {}) {
+    const modal = new ModalBuilder()
+        .setCustomId('loan_buyer_form')
+        .setTitle('Loan Buyer Details');
+
+    const components = [
         new TextInputBuilder()
             .setCustomId('spa_date')
             .setLabel('SPA Date (YYYY-MM-DD)')
@@ -437,15 +457,102 @@ function createCustomerModal(existingData = {}) {
             .setCustomId('la_date')
             .setLabel('LA Date (YYYY-MM-DD)')
             .setStyle(TextInputStyle.Short)
+            .setRequired(true),
+
+        new TextInputBuilder()
+            .setCustomId('lo_date')
+            .setLabel('LO Date (YYYY-MM-DD)')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true),
+
+        new TextInputBuilder()
+            .setCustomId('bank_of_finance')
+            .setLabel('Bank of Finance')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true),
+
+        new TextInputBuilder()
+            .setCustomId('loan_amount')
+            .setLabel('Loan Amount (RM)')
+            .setStyle(TextInputStyle.Short)
             .setRequired(true)
     ];
 
     // Set values only if existing data exists
-    if (existingData.customer_name) components[0].setValue(existingData.customer_name);
-    if (existingData.customer_phone) components[1].setValue(existingData.customer_phone);
-    if (existingData.customer_address) components[2].setValue(existingData.customer_address);
-    if (existingData.spa_date) components[3].setValue(existingData.spa_date);
-    if (existingData.la_date) components[4].setValue(existingData.la_date);
+    if (existingData.spa_date) components[0].setValue(existingData.spa_date);
+    if (existingData.la_date) components[1].setValue(existingData.la_date);
+    if (existingData.lo_date) components[2].setValue(existingData.lo_date);
+    if (existingData.bank_of_finance) components[3].setValue(existingData.bank_of_finance);
+    if (existingData.loan_amount) components[4].setValue(existingData.loan_amount.toString());
+
+    components.forEach(component => {
+        modal.addComponents(new ActionRowBuilder().addComponents(component));
+    });
+
+    return modal;
+}
+
+// Create cash buyer details modal
+function createCashBuyerModal(existingData = {}) {
+    const modal = new ModalBuilder()
+        .setCustomId('cash_buyer_form')
+        .setTitle('Cash Buyer Payment Details');
+
+    const components = [
+        new TextInputBuilder()
+            .setCustomId('spa_date')
+            .setLabel('SPA Date (YYYY-MM-DD)')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true),
+
+        new TextInputBuilder()
+            .setCustomId('downpayment_amount')
+            .setLabel('Amount of Downpayment Paid (RM)')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true),
+
+        new TextInputBuilder()
+            .setCustomId('payment_date')
+            .setLabel('Date of Payment (YYYY-MM-DD)')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+    ];
+
+    // Set values only if existing data exists
+    if (existingData.spa_date) components[0].setValue(existingData.spa_date);
+    if (existingData.downpayment_amount) components[1].setValue(existingData.downpayment_amount.toString());
+    if (existingData.payment_date) components[2].setValue(existingData.payment_date);
+
+    components.forEach(component => {
+        modal.addComponents(new ActionRowBuilder().addComponents(component));
+    });
+
+    return modal;
+}
+
+// Create differential payment modal
+function createDifferentialPaymentModal(existingData = {}) {
+    const modal = new ModalBuilder()
+        .setCustomId('differential_payment_form')
+        .setTitle('Differential Payment Details');
+
+    const components = [
+        new TextInputBuilder()
+            .setCustomId('differential_amount')
+            .setLabel('Amount Customer Paid (RM)')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true),
+
+        new TextInputBuilder()
+            .setCustomId('differential_payment_date')
+            .setLabel('Date of Payment (YYYY-MM-DD)')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+    ];
+
+    // Set values only if existing data exists
+    if (existingData.differential_amount) components[0].setValue(existingData.differential_amount.toString());
+    if (existingData.differential_payment_date) components[1].setValue(existingData.differential_payment_date);
 
     components.forEach(component => {
         modal.addComponents(new ActionRowBuilder().addComponents(component));
@@ -499,10 +606,26 @@ function createConfirmationEmbed(data) {
         .setColor(0x00AE86)
         .addFields(
             { name: '🏢 Project Details', value: `**Project:** ${data.project_name}\n**Unit:** ${data.unit_no}\n**SPA Price:** RM${Number(String(data.spa_price).replace(/,/g, '')).toLocaleString()}\n**Nett Price:** RM${Number(String(data.nett_price).replace(/,/g, '')).toLocaleString()}\n**Commission Rate:** ${data.commission_rate}%\n\n`, inline: false },
-            { name: '👤 Customer Details', value: `**Name:** ${data.customer_name}\n**Phone:** ${data.customer_phone}\n**Address:** ${data.customer_address}\n\n`, inline: false },
-            { name: '📅 Important Dates', value: `**SPA Date:** ${data.spa_date}\n**LA Date:** ${data.la_date}\n\n`, inline: false }
+            { name: '👤 Customer Details', value: `**Name:** ${data.customer_name}\n**Phone:** ${data.customer_phone}\n**Address:** ${data.customer_address}\n\n`, inline: false }
         )
         .setTimestamp();
+
+    // Add payment-specific details
+    if (data.buyer_type === 'loan') {
+        let paymentDetails = `**SPA Date:** ${data.spa_date}\n**LA Date:** ${data.la_date}\n**LO Date:** ${data.lo_date}\n**Bank:** ${data.bank_of_finance}\n**Loan Amount:** RM${data.loan_amount.toLocaleString()}`;
+        
+        if (data.differential_amount) {
+            paymentDetails += `\n**Differential Paid:** RM${data.differential_amount.toLocaleString()}\n**Payment Date:** ${data.differential_payment_date}`;
+        }
+        
+        embed.addFields({ name: '🏦 Loan Buyer Details', value: `${paymentDetails}\n\n`, inline: false });
+    } else if (data.buyer_type === 'cash') {
+        const paymentDetails = `**SPA Date:** ${data.spa_date}\n**Downpayment:** RM${data.downpayment_amount.toLocaleString()}\n**Payment Date:** ${data.payment_date}`;
+        embed.addFields({ name: '💵 Cash Buyer Details', value: `${paymentDetails}\n\n`, inline: false });
+    } else {
+        // Legacy support for old submissions without buyer type
+        embed.addFields({ name: '📅 Important Dates', value: `**SPA Date:** ${data.spa_date || 'N/A'}\n**LA Date:** ${data.la_date || 'N/A'}\n\n`, inline: false });
+    }
 
     // Add agent details
     const agentDetails = data.agents
@@ -1647,41 +1770,224 @@ client.on('interactionCreate', async interaction => {
             data.customer_name = interaction.fields.getTextInputValue('customer_name');
             data.customer_phone = interaction.fields.getTextInputValue('customer_phone');
             data.customer_address = interaction.fields.getTextInputValue('customer_address');
-            data.spa_date = interaction.fields.getTextInputValue('spa_date');
-            data.la_date = interaction.fields.getTextInputValue('la_date');
 
             // Filter out empty agents
             data.agents = data.agents.filter(agent => agent && agent.name);
 
             // Validate consultant percentages
-             if (!validateAgentPercentages(data.agents)) {
-            const currentTotal = data.agents.reduce((sum, agent) => sum + parseFloat(agent.percentage || 0), 0);
+            if (!validateAgentPercentages(data.agents)) {
+                const currentTotal = data.agents.reduce((sum, agent) => sum + parseFloat(agent.percentage || 0), 0);
 
-            const editRow = new ActionRowBuilder()
+                const editRow = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('edit_agent_percentages')
+                            .setLabel('✏️ Edit Consultant Percentages')
+                            .setStyle(ButtonStyle.Primary),
+
+                        new ButtonBuilder()
+                            .setCustomId('cancel_submission')
+                            .setLabel('❌ Cancel')
+                            .setStyle(ButtonStyle.Danger)
+                    );
+
+                await interaction.reply({
+                    content: `❌ **Consultant percentages must total exactly 100%!**\n\n💡 **Explanation:** Each consultant's percentage represents their portion of the total commission.\n\nCurrent total: **${currentTotal.toFixed(1)}%**\n\nClick below to edit your consultant percentages:`,
+                    components: [editRow],
+                    ephemeral: true
+                });
+                return;
+            }
+
+            // Show payment type selection
+            const paymentRow = new ActionRowBuilder()
                 .addComponents(
                     new ButtonBuilder()
-                        .setCustomId('edit_agent_percentages')
-                        .setLabel('✏️ Edit Consultant Percentages')
+                        .setCustomId('select_cash_buyer')
+                        .setLabel('💵 Cash Buyer')
                         .setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder()
+                        .setCustomId('select_loan_buyer')
+                        .setLabel('🏦 Loan Buyer')
+                        .setStyle(ButtonStyle.Primary)
+                );
 
+            const backRow = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('back_to_customer_form')
+                        .setLabel('← Back to Customer Details')
+                        .setStyle(ButtonStyle.Secondary)
+                );
+
+            await interaction.update({
+                content: '💰 **Payment Type Selection**\n\nPlease select the payment type for this transaction:',
+                components: [paymentRow, backRow],
+                embeds: []
+            });
+        }
+
+        else if (interaction.customId === 'loan_buyer_form') {
+            const data = submissions.get(userId);
+
+            if (!data) {
+                const restartRow = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('restart_submission')
+                            .setLabel('🔄 Start New Submission')
+                            .setStyle(ButtonStyle.Primary)
+                    );
+
+                await interaction.update({
+                    content: '❌ **Session expired or missing data**\n\nYour session has timed out. Click below to start a new submission:',
+                    components: [restartRow],
+                    embeds: []
+                });
+                return;
+            }
+
+            // Add loan buyer data
+            data.buyer_type = 'loan';
+            data.spa_date = interaction.fields.getTextInputValue('spa_date');
+            data.la_date = interaction.fields.getTextInputValue('la_date');
+            data.lo_date = interaction.fields.getTextInputValue('lo_date');
+            data.bank_of_finance = interaction.fields.getTextInputValue('bank_of_finance');
+            data.loan_amount = parseFloat(interaction.fields.getTextInputValue('loan_amount').replace(/,/g, ''));
+
+            const nettPrice = parseFloat(String(data.nett_price).replace(/,/g, ''));
+            
+            // Check if loan amount covers nett price
+            if (data.loan_amount >= nettPrice) {
+                // Proceed to confirmation
+                data.agents = calculateCommissions(data.nett_price, data.commission_rate, data.agents);
+                const embed = createConfirmationEmbed(data);
+                const confirmRow = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('confirm_submission')
+                            .setLabel('✅ Confirm & Upload Documents')
+                            .setStyle(ButtonStyle.Success),
+                        new ButtonBuilder()
+                            .setCustomId('edit_details')
+                            .setLabel('✏️ Edit Details')
+                            .setStyle(ButtonStyle.Secondary),
+                        new ButtonBuilder()
+                            .setCustomId('cancel_submission')
+                            .setLabel('❌ Cancel')
+                            .setStyle(ButtonStyle.Danger)
+                    );
+
+                await interaction.update({
+                    content: '',
+                    embeds: [embed],
+                    components: [confirmRow]
+                });
+            } else {
+                // Need to handle differential payment
+                const differential = nettPrice - data.loan_amount;
+                const differentialRow = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('differential_paid')
+                            .setLabel('✅ Paid')
+                            .setStyle(ButtonStyle.Success),
+                        new ButtonBuilder()
+                            .setCustomId('differential_partially_paid')
+                            .setLabel('🔄 Partially Paid')
+                            .setStyle(ButtonStyle.Primary),
+                        new ButtonBuilder()
+                            .setCustomId('differential_not_paid')
+                            .setLabel('❌ Not Paid')
+                            .setStyle(ButtonStyle.Danger)
+                    );
+
+                await interaction.update({
+                    content: `💰 **Differential Payment Required**\n\n**Nett Price:** RM${nettPrice.toLocaleString()}\n**Loan Amount:** RM${data.loan_amount.toLocaleString()}\n**Differential:** RM${differential.toLocaleString()}\n\nHas the customer paid the differential amount?`,
+                    components: [differentialRow],
+                    embeds: []
+                });
+            }
+        }
+
+        else if (interaction.customId === 'cash_buyer_form') {
+            const data = submissions.get(userId);
+
+            if (!data) {
+                const restartRow = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('restart_submission')
+                            .setLabel('🔄 Start New Submission')
+                            .setStyle(ButtonStyle.Primary)
+                    );
+
+                await interaction.update({
+                    content: '❌ **Session expired or missing data**\n\nYour session has timed out. Click below to start a new submission:',
+                    components: [restartRow],
+                    embeds: []
+                });
+                return;
+            }
+
+            // Add cash buyer data
+            data.buyer_type = 'cash';
+            data.spa_date = interaction.fields.getTextInputValue('spa_date');
+            data.downpayment_amount = parseFloat(interaction.fields.getTextInputValue('downpayment_amount').replace(/,/g, ''));
+            data.payment_date = interaction.fields.getTextInputValue('payment_date');
+
+            // Proceed to confirmation
+            data.agents = calculateCommissions(data.nett_price, data.commission_rate, data.agents);
+            const embed = createConfirmationEmbed(data);
+            const confirmRow = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('confirm_submission')
+                        .setLabel('✅ Confirm & Upload Documents')
+                        .setStyle(ButtonStyle.Success),
+                    new ButtonBuilder()
+                        .setCustomId('edit_details')
+                        .setLabel('✏️ Edit Details')
+                        .setStyle(ButtonStyle.Secondary),
                     new ButtonBuilder()
                         .setCustomId('cancel_submission')
                         .setLabel('❌ Cancel')
                         .setStyle(ButtonStyle.Danger)
                 );
 
-            await interaction.reply({
-                content: `❌ **Consultant percentages must total exactly 100%!**\n\n💡 **Explanation:** Each consultant's percentage represents their portion of the total commission.\n\nCurrent total: **${currentTotal.toFixed(1)}%**\n\nClick below to edit your consultant percentages:`,
-                components: [editRow],
-                ephemeral: true
+            await interaction.update({
+                content: '',
+                embeds: [embed],
+                components: [confirmRow]
             });
-            return;
         }
 
-            // Calculate commissions
-            data.agents = calculateCommissions(data.nett_price, data.commission_rate, data.agents);
+        else if (interaction.customId === 'differential_payment_form') {
+            const data = submissions.get(userId);
 
-            // Show confirmation
+            if (!data) {
+                const restartRow = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('restart_submission')
+                            .setLabel('🔄 Start New Submission')
+                            .setStyle(ButtonStyle.Primary)
+                    );
+
+                await interaction.update({
+                    content: '❌ **Session expired or missing data**\n\nYour session has timed out. Click below to start a new submission:',
+                    components: [restartRow],
+                    embeds: []
+                });
+                return;
+            }
+
+            // Add differential payment data
+            data.differential_amount = parseFloat(interaction.fields.getTextInputValue('differential_amount').replace(/,/g, ''));
+            data.differential_payment_date = interaction.fields.getTextInputValue('differential_payment_date');
+
+            // Proceed to confirmation
+            data.agents = calculateCommissions(data.nett_price, data.commission_rate, data.agents);
             const embed = createConfirmationEmbed(data);
             const confirmRow = new ActionRowBuilder()
                 .addComponents(
@@ -1823,6 +2129,142 @@ client.on('interactionCreate', async interaction => {
             const data = submissions.get(userId);
             const customerModal = createCustomerModal(data);
             await interaction.showModal(customerModal);
+        }
+
+        else if (interaction.customId === 'back_to_customer_form') {
+            const data = submissions.get(userId);
+            const customerModal = createCustomerModal(data);
+            await interaction.showModal(customerModal);
+        }
+
+        else if (interaction.customId === 'select_cash_buyer') {
+            const data = submissions.get(userId);
+            const nettPrice = parseFloat(String(data.nett_price).replace(/,/g, ''));
+            
+            const cashPaymentRow = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('cash_full_paid')
+                        .setLabel('✅ Full Amount Paid')
+                        .setStyle(ButtonStyle.Success),
+                    new ButtonBuilder()
+                        .setCustomId('cash_partially_paid')
+                        .setLabel('🔄 Partially Paid')
+                        .setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder()
+                        .setCustomId('cash_not_paid')
+                        .setLabel('❌ Not Paid')
+                        .setStyle(ButtonStyle.Danger)
+                );
+
+            const backRow = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('back_to_payment_selection')
+                        .setLabel('← Back to Payment Type')
+                        .setStyle(ButtonStyle.Secondary)
+                );
+
+            await interaction.update({
+                content: `💵 **Cash Buyer Payment Status**\n\n**Full Amount:** RM${nettPrice.toLocaleString()}\n\nWhat is the payment status?`,
+                components: [cashPaymentRow, backRow],
+                embeds: []
+            });
+        }
+
+        else if (interaction.customId === 'select_loan_buyer') {
+            const data = submissions.get(userId);
+            const loanModal = createLoanBuyerModal(data);
+            await interaction.showModal(loanModal);
+        }
+
+        else if (interaction.customId === 'back_to_payment_selection') {
+            const paymentRow = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('select_cash_buyer')
+                        .setLabel('💵 Cash Buyer')
+                        .setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder()
+                        .setCustomId('select_loan_buyer')
+                        .setLabel('🏦 Loan Buyer')
+                        .setStyle(ButtonStyle.Primary)
+                );
+
+            const backRow = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('back_to_customer_form')
+                        .setLabel('← Back to Customer Details')
+                        .setStyle(ButtonStyle.Secondary)
+                );
+
+            await interaction.update({
+                content: '💰 **Payment Type Selection**\n\nPlease select the payment type for this transaction:',
+                components: [paymentRow, backRow],
+                embeds: []
+            });
+        }
+
+        else if (interaction.customId === 'cash_full_paid' || interaction.customId === 'cash_partially_paid') {
+            const data = submissions.get(userId);
+            const cashModal = createCashBuyerModal(data);
+            await interaction.showModal(cashModal);
+        }
+
+        else if (interaction.customId === 'cash_not_paid') {
+            const data = submissions.get(userId);
+            const nettPrice = parseFloat(String(data.nett_price).replace(/,/g, ''));
+            const minAmount = Math.round(nettPrice * 0.1);
+
+            const retryRow = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('select_cash_buyer')
+                        .setLabel('← Back to Cash Payment')
+                        .setStyle(ButtonStyle.Secondary),
+                    new ButtonBuilder()
+                        .setCustomId('cancel_submission')
+                        .setLabel('❌ Cancel Submission')
+                        .setStyle(ButtonStyle.Danger)
+                );
+
+            await interaction.update({
+                content: `⚠️ **Payment Collection Required**\n\n**Important:** Please collect at least 10% (RM${minAmount.toLocaleString()}) from the cash buyer before submitting the fast commission.\n\n**Full Amount:** RM${nettPrice.toLocaleString()}\n**Minimum Required:** RM${minAmount.toLocaleString()}\n\nOnce payment is collected, you can return and update the payment status.`,
+                components: [retryRow],
+                embeds: []
+            });
+        }
+
+        else if (interaction.customId === 'differential_paid' || interaction.customId === 'differential_partially_paid') {
+            const data = submissions.get(userId);
+            const differentialModal = createDifferentialPaymentModal(data);
+            await interaction.showModal(differentialModal);
+        }
+
+        else if (interaction.customId === 'differential_not_paid') {
+            const data = submissions.get(userId);
+            const nettPrice = parseFloat(String(data.nett_price).replace(/,/g, ''));
+            const loanAmount = data.loan_amount || 0;
+            const differential = nettPrice - loanAmount;
+
+            const retryRow = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('select_loan_buyer')
+                        .setLabel('← Back to Loan Details')
+                        .setStyle(ButtonStyle.Secondary),
+                    new ButtonBuilder()
+                        .setCustomId('cancel_submission')
+                        .setLabel('❌ Cancel Submission')
+                        .setStyle(ButtonStyle.Danger)
+                );
+
+            await interaction.update({
+                content: `⚠️ **Differential Payment Collection Required**\n\n**Important:** Please collect the differential sum of RM${differential.toLocaleString()} from the buyer before submitting the fast commission.\n\n**Nett Price:** RM${nettPrice.toLocaleString()}\n**Loan Amount:** RM${loanAmount.toLocaleString()}\n**Differential Required:** RM${differential.toLocaleString()}\n\nOnce payment is collected, you can return and update the payment status.`,
+                components: [retryRow],
+                embeds: []
+            });
         }
 
         else if (interaction.customId === 'confirm_submission') {
@@ -2143,7 +2585,8 @@ client.on('interactionCreate', async interaction => {
         }
 
         else if (interaction.customId === 'edit_customer_details') {
-            const customerModal = createCustomerModal();
+            const data = submissions.get(userId);
+            const customerModal = createCustomerModal(data);
             await interaction.showModal(customerModal);
         }
 
