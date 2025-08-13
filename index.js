@@ -1616,8 +1616,8 @@ client.on('interactionCreate', async interaction => {
             // Process only the current agent (step)
             try {
                 const name = interaction.fields.getTextInputValue(`agent${step}_name`) || '';
-                const code = interaction.fields.getTextInputValue(`agent${agentNum}_code`) || '';
-                const percentage = interaction.fields.getTextInputValue(`agent${agentNum}_percentage`) || '0';
+                const code = interaction.fields.getTextInputValue(`agent${step}_code`) || '';
+                const percentage = interaction.fields.getTextInputValue(`agent${step}_percentage`) || '';
 
                 if (name || code || percentage !== '0') {
                     data.agents[step-1] = { name, code, percentage: parseFloat(percentage) || 0 };
@@ -4835,8 +4835,7 @@ async function updateChecklistDisplay(message, data, userId) {
 
     try {
         // Find the original checklist message and update it
-        const channel = message.channel;
-        const messages = await channel.messages.fetch({ limit: 20 });
+        const messages = await message.channel.messages.fetch({ limit: 20 });
 
         const checklistMessage = messages.find(msg =>
             msg.author.id === message.client.user.id &&
