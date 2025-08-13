@@ -2607,6 +2607,21 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
+            // Add "Add New Consultant" button if there are fewer than 4 consultants
+            const existingConsultantsCount = data.agents.filter(agent => agent && agent.name).length;
+            if (existingConsultantsCount < 4) {
+                const nextSlot = data.agents.findIndex(agent => !agent || !agent.name);
+                const nextConsultantNum = nextSlot === -1 ? data.agents.length + 1 : nextSlot + 1;
+                if (nextConsultantNum <= 4) {
+                    agentButtons.push(
+                        new ButtonBuilder()
+                            .setCustomId(`show_agent_form_${nextConsultantNum}`)
+                            .setLabel(`➕ Add Consultant ${nextConsultantNum}`)
+                            .setStyle(ButtonStyle.Success)
+                    );
+                }
+            }
+
             const agentRow = new ActionRowBuilder().addComponents(agentButtons.slice(0, 5));
             const rows = [agentRow];
 
@@ -2628,7 +2643,7 @@ client.on('interactionCreate', async interaction => {
             const currentTotal = data.agents.reduce((sum, agent) => sum + parseFloat(agent.percentage || 0), 0);
 
             await interaction.update({
-                content: `👥 **Edit Consultant Percentages**\n\nCurrent total: **${currentTotal.toFixed(1)}%** (needs to be 100%)\n\nChoose which consultant to edit:`,
+                content: `👥 **Edit Consultant Percentages**\n\nCurrent total: **${currentTotal.toFixed(1)}%** (needs to be 100%)\n\nChoose which consultant to edit or add a new one:`,
                 components: rows
             });
         }
